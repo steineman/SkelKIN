@@ -2,27 +2,32 @@
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
+from pathlib import Path
 
 import fromchemKIN
+import fromcomsolRE
 import condition_objects
 import comparator
 import project_handler
 import os
 import time as timing
 
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+
 # user input, to be manipulated using GUI? xd
-project_name = "CRECK_test"
-input_folder = "CRECK_conditions/"
+project_name = "COMSOL_260306b"
+input_folder = str(BASE_DIR / "COMSOL_260306b_conditions")
 sensitivity_tolerance = 1e-3
-excluded_species = ['CH4', 'CH3', 'H2', 'C2H2', 'C2H4', 'C2H6']
-model_type = "ChemKIN"
+excluded_species = ['CH4', 'CO2','H','H2','CO','H2O','CH3','O2','O','H2O']
+model_type = "COMSOL_thermal"
 comparator_type = "max" # "lin", "log", "max"
 
 # Optional files, depending on model choice
-chemkin_kinet = "CRECK_2003_TOT_HT_SOOT_pyro_COMSOL.CKI.txt"
-chemkin_thermo = "CRECK_2003_TOT_HT_SOOT_therm_pyro_COMSOL.CKT.txt"
-comsol_therm_model = "thermo_model.mph"
-comsol_plasma_model = "plasma_model.mph"
+chemkin_kinet = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_pyro_COMSOL.CKI.txt")
+chemkin_thermo = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_therm_pyro_COMSOL.CKT.txt")
+comsol_therm_model = str(BASE_DIR / "0D_260306b.mph")
+comsol_plasma_model = str(BASE_DIR / "plasma_model.mph")
 
 # Code start, good luck
 def check_project_similarity():
@@ -49,7 +54,8 @@ def _run_standard_single_condition(condition):
         case "COMSOL_plasma":
             raise NotImplementedError("I didnt implement COMSOL plasma yet lole")
         case "COMSOL_thermal":
-            raise NotImplementedError("I didnt implement COMSOL thermal yet lole")
+            time_vals, result_dict = fromcomsolRE.run_standard_model(condition)
+            return time_vals, result_dict
         case _:
             raise ValueError(f"{model_type} doesn't exist")
 
@@ -67,10 +73,19 @@ def _reduced_species_error_worker(args):
      comparator_mode) = args
 
     # Run reduced simulation
-    time_vals, result_dict = fromchemKIN.run_reduced_species_model(
-        condition,
-        [omitted_species] if isinstance(omitted_species, str) else omitted_species
-    )
+    match model_type:
+        case "ChemKIN":
+            time_vals, result_dict = fromchemKIN.run_reduced_species_model(
+                condition,
+                [omitted_species] if isinstance(omitted_species, str) else omitted_species
+            )
+        case "COMSOL_thermal":
+            time_vals, result_dict = fromcomsolRE.run_reduced_species_model(
+                condition,
+                [omitted_species] if isinstance(omitted_species, str) else omitted_species
+            )
+        case _:
+            raise ValueError(f"{model_type} doesn't exist")
 
     # Compute error immediately
     match comparator_mode:
@@ -122,11 +137,21 @@ def _reduced_reactions_error_worker(args):
      comparator_mode) = args
 
     # Run reduced reaction simulation
-    time_vals, result_dict = fromchemKIN.run_reduced_reactions_model(
-        condition,
-        [omitted_species] if isinstance(omitted_species, str) else omitted_species,
-        [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
-    )
+    match model_type:
+        case "ChemKIN":
+            time_vals, result_dict = fromchemKIN.run_reduced_reactions_model(
+                condition,
+                [omitted_species] if isinstance(omitted_species, str) else omitted_species,
+                [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
+            )
+        case "COMSOL_thermal":
+            time_vals, result_dict = fromcomsolRE.run_reduced_reactions_model(
+                condition,
+                [omitted_species] if isinstance(omitted_species, str) else omitted_species,
+                [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
+            )
+        case _:
+            raise ValueError(f"{model_type} doesn't exist")
 
     # Compute error immediately
     match comparator_mode:
@@ -423,7 +448,7 @@ def inverse_item_pyramid_builder(item_error_list : condition_objects.ItemErrorLi
 if __name__ == "__main__":
 
     # Get the project file ready, see what is up
-    project_handler.project_identifier = project_name
+    project_handler.project_identifier = str(BASE_DIR / project_name)
 
     status = project_handler.where_are_we() # "nothing", "initialized", "step 1", "step 2", "step 3", "step 4"
 
@@ -441,7 +466,9 @@ if __name__ == "__main__":
             all_species = fromchemKIN.get_species()
             all_reactions = fromchemKIN.get_reactions()
         case "COMSOL_thermal":
-            raise NotImplementedError("I didnt implement COMSOL thermal yet lole")
+            fromcomsolRE.load_model_to_yaml(comsol_therm_model)
+            all_species = fromcomsolRE.get_species()
+            all_reactions = fromcomsolRE.get_reactions()
         case "COMSOL_plasma":
             raise NotImplementedError("I didnt implement COMSOL plasma yet lole")
         case _:
@@ -476,7 +503,8 @@ if __name__ == "__main__":
     conditions_list = condition_objects.TestConditions([])
 
     for filename in os.listdir(input_folder):
-        new_condition = condition_objects.load_thermal_condition(input_folder + "/" + filename)
+        condition_path = Path(input_folder) / filename
+        new_condition = condition_objects.load_thermal_condition(str(condition_path))
         conditions_list.add_condition(new_condition)
 
     # Run standard models

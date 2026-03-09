@@ -1,0 +1,1040 @@
+generator: YamlWriter
+cantera-version: 3.2.0
+git-commit: 4a8358e
+date: Sun Mar  8 18:35:53 2026
+phases:
+  - name: ""
+    thermo: ideal-gas
+    elements: [H, C]
+    species: [H2, H, CH4, CH3, CH2, C, CH, C2H6, C2H5, C2H4, C2H3, C2H2, C2H, C3H8,
+    C3H4P, C3H4A, C3H3, C3H2, C4H6, C4H4, C4H3, C4H2, C6H6, C6H5, C5H5,
+    C10H8, C7H7, C7H6, C6H5C2H, C6H4C2H, C10H7, C12H8, C12H7, C14H9, C16H10,
+    C16H9, C18H10, C18H9, LC6H5]
+    kinetics: bulk
+    skip-undeclared-third-bodies: true
+    state:
+      T: 1.0e-03
+      density: 1.0e-03
+      Y: {H2: 1.0}
+species:
+  - name: H2
+    composition: {H: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 700.0, 3500.0]
+      data:
+        - [2.64204438, 5.49529274e-03, -1.27163634e-05, 1.28749173e-08,
+        -4.70027749e-12, -943.236614, -0.512231102]
+        - [3.78199881, -1.01873259e-03, 1.24226233e-06, -4.19011898e-10,
+        4.75543793e-14, -1102.83023, -5.6052591]
+  - name: H
+    composition: {H: 1.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 860.0, 3500.0]
+      data:
+        - [2.49950544, 2.99164046e-06, -5.92759759e-09, 4.87810165e-12,
+        -1.4553932e-15, 2.54737866e+04, -0.444574018]
+        - [2.50031493, -7.73406828e-07, 6.39345346e-10, -2.12551791e-13,
+        2.44479191e-17, 2.54736474e+04, -0.448357228]
+  - name: CH4
+    composition: {C: 1.0, H: 4.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 700.0, 3500.0]
+      data:
+        - [5.23967335, -0.0146835123, 5.29732711e-05, -5.41668822e-08,
+        1.96318566e-11, -1.02526308e+04, -4.97649748]
+        - [0.505346405, 0.0123697845, -4.99807922e-06, 1.04392765e-09,
+        -8.62897416e-14, -9589.82501, 16.1752775]
+  - name: CH3
+    composition: {C: 1.0, H: 3.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1060.0, 3500.0]
+      data:
+        - [3.4782931, 3.54764773e-03, 1.4740844e-06, -1.94375955e-09,
+        5.21921232e-13, 1.64399516e+04, 2.40875956]
+        - [2.78805104, 6.15233477e-03, -2.21179349e-06, 3.74402648e-10,
+        -2.48151349e-14, 1.65862829e+04, 5.77899818]
+  - name: CH2
+    composition: {C: 1.0, H: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1800.0, 3500.0]
+      data:
+        - [3.7648946, 1.43839191e-03, 4.75583077e-07, -4.31788591e-10,
+        7.58292874e-14, 4.58645699e+04, 1.48953153]
+        - [2.81272972, 3.55431388e-03, -1.28768523e-06, 2.21273744e-10,
+        -1.48738147e-14, 4.62073492e+04, 6.64284652]
+  - name: C
+    composition: {C: 1.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 700.0, 3500.0]
+      data:
+        - [2.54495192, -2.47725281e-04, 5.48018277e-07, -5.4855125e-10,
+        2.04117331e-13, 8.54434105e+04, 4.56874273]
+        - [2.49472531, 3.92839476e-05, -6.7001498e-08, 3.71818694e-11,
+        -5.07306885e-15, 8.54504422e+04, 4.79314254]
+  - name: CH
+    composition: {C: 1.0, H: 1.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1590.0, 3500.0]
+      data:
+        - [3.77264332, -1.5854735e-03, 2.83512238e-06, -1.36146058e-09,
+        2.23995332e-13, 7.06312492e+04, 0.879407904]
+        - [2.27990128, 2.16985238e-03, -7.07637885e-07, 1.23973494e-10,
+        -9.56348515e-15, 7.11059412e+04, 8.77326061]
+  - name: C2H6
+    composition: {C: 2.0, H: 6.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1800.0, 3500.0]
+      data:
+        - [-0.241778724, 0.0253475709, -1.39645112e-05, 4.03257452e-09,
+        -4.87754387e-13, -1.10391121e+04, 21.9572625]
+        - [4.07959141, 0.0157445261, -5.96197393e-06, 1.06867182e-09,
+        -7.6101234e-14, -1.25948053e+04, -1.43089412]
+  - name: C2H5
+    composition: {C: 2.0, H: 5.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1800.0, 3500.0]
+      data:
+        - [0.675421801, 0.0211542617, -1.20878017e-05, 3.6495118e-09,
+        -4.59753237e-13, 1.33457186e+04, 19.5628439]
+        - [5.1979136, 0.01110428, -3.71281686e-06, 5.47665571e-10, -2.89412604e-14,
+        1.17176215e+04, -4.91382513]
+  - name: C2H4
+    composition: {C: 2.0, H: 4.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1650.0, 3500.0]
+      data:
+        - [-0.060293245, 0.020813397, -1.34307867e-05, 4.60638301e-09,
+        -6.51687481e-13, 5511.51676, 21.0642172]
+        - [4.60402718, 9.5059535e-03, -3.15129261e-06, 4.53052074e-10,
+        -2.23949159e-14, 3972.29102, -3.77420905]
+  - name: C2H3
+    composition: {C: 2.0, H: 3.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1450.0, 3500.0]
+      data:
+        - [1.23421214, 0.0156222204, -1.10171572e-05, 4.27989337e-09,
+        -6.91541509e-13, 3.46967692e+04, 16.8637048]
+        - [4.18728376, 7.47581588e-03, -2.58984227e-06, 4.05265795e-10,
+        -2.35022721e-14, 3.38403785e+04, 1.51958751]
+  - name: C2H2
+    composition: {C: 2.0, H: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 790.0, 3500.0]
+      data:
+        - [0.770536907, 0.0237107998, -3.66622044e-05, 2.95989761e-08,
+        -9.27579255e-12, 2.64317975e+04, 14.0907683]
+        - [4.37267454, 5.4721283e-03, -2.03181542e-06, 3.75019116e-10,
+        -2.77049062e-14, 2.58626597e+04, -2.43835921]
+  - name: C2H
+    composition: {C: 2.0, H: 1.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1710.0, 3500.0]
+      data:
+        - [4.60873599, 1.42766785e-03, 8.54158643e-07, -6.83903344e-10,
+        1.21940589e-13, 6.68801772e+04, -1.05894068]
+        - [3.41788257, 4.21328989e-03, -1.58936946e-06, 2.68739191e-10,
+        -1.73346359e-14, 6.72874491e+04, 5.32512367]
+  - name: C3H8
+    composition: {C: 3.0, H: 8.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1690.0, 3500.0]
+      data:
+        - [-1.38651266, 0.0409518028, -2.62352705e-05, 8.850178e-09,
+        -1.22652064e-12, -1.37945792e+04, 29.2742161]
+        - [8.33847007, 0.0179340922, -5.80534981e-06, 7.91037708e-10,
+        -3.43401227e-14, -1.70816233e+04, -22.7461799]
+  - name: C3H4P
+    composition: {C: 3.0, H: 4.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1570.0, 3500.0]
+      data:
+        - [1.72714322, 0.0226902153, -1.51273023e-05, 5.4293002e-09,
+        -8.07229635e-13, 2.08991609e+04, 13.8804115]
+        - [6.45797858, 0.0106371316, -3.61161722e-06, 5.39412691e-10,
+        -2.85851275e-14, 1.94136786e+04, -11.0770989]
+  - name: C3H4A
+    composition: {C: 3.0, H: 4.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1420.0, 3500.0]
+      data:
+        - [0.508248696, 0.0275573205, -2.13550933e-05, 8.81402419e-09,
+        -1.47914981e-12, 2.17582498e+04, 19.0382079]
+        - [6.37608366, 0.0110282079, -3.89476312e-06, 6.16686076e-10,
+        -3.59564768e-14, 2.00917847e+04, -11.3283006]
+  - name: C3H3
+    composition: {C: 3.0, H: 3.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 840.0, 3500.0]
+      data:
+        - [1.75584147, 0.0295861278, -3.88094543e-05, 2.80498013e-08,
+        -8.12163476e-12, 4.07276565e+04, 13.5345464]
+        - [5.75057762, 0.0105635747, -4.84060952e-06, 1.09040068e-09,
+        -9.8003613e-14, 4.00565408e+04, -5.04125059]
+  - name: C3H2
+    composition: {C: 3.0, H: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1260.0, 3500.0]
+      data:
+        - [2.15397882, 0.0195955841, -1.84330427e-05, 8.94193413e-09,
+        -1.72114805e-12, 6.19349626e+04, 13.2451538]
+        - [6.42043189, 6.05128866e-03, -2.30888141e-06, 4.10631875e-10,
+        -2.84293474e-14, 6.08598164e+04, -8.32404334]
+  - name: C4H6
+    composition: {C: 4.0, H: 6.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1800.0, 3500.0]
+      data:
+        - [0.465225109, 0.0346661815, -2.14437338e-05, 6.84964885e-09,
+        -8.89456944e-13, 1.17919599e+04, 23.1239087]
+        - [9.30872521, 0.0150139591, -5.06688177e-06, 7.84148097e-10,
+        -4.70262839e-14, 8608.29987, -24.7389586]
+  - name: C4H4
+    composition: {C: 4.0, H: 4.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1290.0, 3500.0]
+      data:
+        - [0.713119716, 0.0341836288, -2.96617954e-05, 1.37214268e-08,
+        -2.5585555e-12, 3.31283217e+04, 20.3030643]
+        - [7.65777119, 0.0126498258, -4.6224895e-06, 7.81217082e-10,
+        -5.07629107e-14, 3.13366016e+04, -14.9692661]
+  - name: C4H3
+    composition: {C: 4.0, H: 3.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1590.0, 3500.0]
+      data:
+        - [2.34662666, 0.0283894138, -2.35278181e-05, 9.69177543e-09,
+        -1.55205057e-12, 6.3575593e+04, 13.868056]
+        - [13.0208969, 1.53590364e-03, 1.805682e-06, -9.30237204e-10,
+        1.18077198e-13, 6.01811751e+04, -42.57915]
+  - name: C4H2
+    composition: {C: 4.0, H: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 720.0, 3500.0]
+      data:
+        - [-0.434754087, 0.0521020832, -9.24512179e-05, 8.22627589e-08,
+        -2.82722759e-11, 5.38477042e+04, 20.3848077]
+        - [7.13414735, 0.0100526308, -4.84819206e-06, 1.14884604e-09,
+        -1.07722834e-13, 5.27577824e+04, -13.6443516]
+  - name: C6H6
+    composition: {C: 6.0, H: 6.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1410.0, 3500.0]
+      data:
+        - [-6.9988211, 0.0724907868, -6.29247613e-05, 2.75111779e-08,
+        -4.74405754e-12, 9332.7568, 53.1863191]
+        - [11.5055544, 0.0199961045, -7.0793546e-06, 1.10673028e-09,
+        -6.24178899e-14, 4114.5229, -42.4445091]
+  - name: C6H5
+    composition: {C: 6.0, H: 5.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1390.0, 3500.0]
+      data:
+        - [-6.76261385, 0.0695132669, -6.22206553e-05, 2.78054854e-08,
+        -4.87825263e-12, 3.99884457e+04, 54.7375207]
+        - [11.2331261, 0.0177269649, -6.33615682e-06, 1.00236865e-09,
+        -5.7548175e-14, 3.498563e+04, -38.0075865]
+  - name: C5H5
+    composition: {C: 5.0, H: 5.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 700.0, 3500.0]
+      data:
+        - [-2.58737467, 0.0645817633, -9.35063898e-05, 7.97943407e-08,
+        -2.77400914e-11, 3.00355619e+04, 30.9448142]
+        - [4.01652588, 0.0268451887, -1.26423015e-05, 2.78092323e-09,
+        -2.35299425e-13, 2.91110159e+04, 1.44025731]
+  - name: C10H8
+    composition: {C: 10.0, H: 8.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1370.0, 3500.0]
+      data:
+        - [-8.71832426, 0.108564074, -9.40254318e-05, 4.10014902e-08,
+        -7.10574258e-12, 1.66434413e+04, 61.5987877]
+        - [15.1184828, 0.0389675576, -1.78248658e-05, 3.92092279e-09,
+        -3.39215689e-13, 1.01121562e+04, -60.9041102]
+  - name: C7H7
+    composition: {C: 7.0, H: 7.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1600.0, 3500.0]
+      data:
+        - [-3.23806381, 0.0696725387, -5.38515508e-05, 2.08502791e-08,
+        -3.18436927e-12, 2.35930472e+04, 38.4624951]
+        - [17.7148781, 0.0172901839, -4.74309316e-06, 3.88421745e-10,
+        1.27959347e-14, 1.68881058e+04, -72.4712964]
+  - name: C7H6
+    composition: {C: 7.0, H: 6.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1290.0, 3500.0]
+      data:
+        - [-3.97785296, 0.0741571673, -6.69987629e-05, 3.09172135e-08,
+        -5.69570188e-12, 4.08594615e+04, 41.6694449]
+        - [11.1282362, 0.0273165807, -1.25329645e-05, 2.76951413e-09,
+        -2.40721375e-13, 3.69620905e+04, -35.0553513]
+  - name: C6H5C2H
+    composition: {C: 8.0, H: 6.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1280.0, 3500.0]
+      data:
+        - [-2.98097334, 0.0803384582, -7.59328693e-05, 3.64640449e-08,
+        -6.91521341e-12, 3.61342445e+04, 36.311315]
+        - [15.2608076, 0.0233328927, -9.1294723e-06, 1.67060897e-09, -1.1962045e-13,
+        3.14643486e+04, -56.1979008]
+  - name: C6H4C2H
+    composition: {C: 8.0, H: 5.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1410.0, 3500.0]
+      data:
+        - [-2.59308039, 0.0708031891, -6.22504674e-05, 2.74351852e-08,
+        -4.75061541e-12, 6.53466354e+04, 36.9628594]
+        - [16.0102852, 0.0180276839, -6.10631287e-06, 8.89485624e-10,
+        -4.39310921e-14, 6.01004863e+04, -59.1795508]
+  - name: C10H7
+    composition: {C: 10.0, H: 7.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1490.0, 3500.0]
+      data:
+        - [-6.45168838, 0.0970877508, -8.18046543e-05, 3.4288711e-08, -5.635111e-12,
+        4.58966205e+04, 53.4576808]
+        - [21.2397127, 0.022748419, -6.96640086e-06, 8.04033892e-10,
+        -1.68765826e-14, 3.7644583e+04, -91.1799918]
+  - name: C12H8
+    composition: {C: 12.0, H: 8.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1570.0, 3500.0]
+      data:
+        - [-8.9502749, 0.115993641, -9.47849497e-05, 3.81172764e-08,
+        -5.98215771e-12, 2.94639746e+04, 60.9409166]
+        - [27.7000801, 0.0226169409, -5.57154154e-06, 2.34725134e-10,
+        5.00956725e-14, 1.79557632e+04, -132.407942]
+  - name: C12H7
+    composition: {C: 12.0, H: 7.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1550.0, 3500.0]
+      data:
+        - [-8.2137563, 0.112327125, -9.36930927e-05, 3.8303122e-08, -6.09707373e-12,
+        6.13483151e+04, 57.745727]
+        - [27.2643903, 0.0207706175, -5.09002113e-06, 1.94274019e-10,
+        4.95146521e-14, 5.03500896e+04, -128.964295]
+  - name: C14H9
+    composition: {C: 14.0, H: 9.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [298.15, 1380.0, 3500.0]
+      data:
+        - [-11.5966331, 0.14762051, -1.32743035e-04, 5.92149564e-08,
+        -1.03757571e-11, 5.21787378e+04, 76.6564976]
+        - [25.1054802, 0.041237573, -1.71094078e-05, 3.35330064e-09,
+        -2.55891906e-13, 4.20489545e+04, -112.231128]
+  - name: C16H10
+    composition: {C: 16.0, H: 10.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1560.0, 3500.0]
+      data:
+        - [-11.7161985, 0.156252776, -1.29753106e-04, 5.2729837e-08,
+        -8.34298979e-12, 2.46599322e+04, 74.394604]
+        - [38.1807346, 0.0283119223, -6.73305412e-06, 1.57165249e-10,
+        8.21178664e-14, 9092.08909, -188.517714]
+  - name: C16H9
+    composition: {C: 16.0, H: 9.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1240.0, 3500.0]
+      data:
+        - [-13.3382684, 0.164875153, -1.52343444e-04, 7.1394191e-08, -1.3423631e-11,
+        5.3424689e+04, 83.4001921]
+        - [16.1933978, 0.0696117135, -3.7105412e-05, 9.43826012e-09,
+        -9.32515878e-13, 4.61008358e+04, -65.4256239]
+  - name: C18H10
+    composition: {C: 18.0, H: 10.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1430.0, 3500.0]
+      data:
+        - [-14.3149505, 0.169106052, -1.51409682e-04, 6.73946752e-08,
+        -1.17120067e-11, 2.56527701e+04, 85.6679583]
+        - [35.5205899, 0.0297059393, -5.18578691e-06, -7.74972602e-10,
+        2.05763862e-13, 1.13998056e+04, -172.584615]
+  - name: C18H9
+    composition: {C: 18.0, H: 9.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1110.0, 3500.0]
+      data:
+        - [-15.4340436, 0.184570724, -1.77697514e-04, 8.90907512e-08,
+        -1.83065188e-11, 5.47074632e+04, 91.6434687]
+        - [10.082678, 0.0926185738, -5.34378516e-05, 1.44603235e-08,
+        -1.49786389e-12, 4.9042751e+04, -34.1228885]
+  - name: LC6H5
+    composition: {C: 6.0, H: 5.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [300.0, 1140.0, 3500.0]
+      data:
+        - [0.167614161, 0.0594226633, -6.25597981e-05, 3.3988188e-08,
+        -7.27779349e-12, 6.17104257e+04, 24.621808]
+        - [12.3076076, 0.0168261951, -6.51181367e-06, 1.2115889e-09,
+        -8.99428205e-14, 5.89425072e+04, -35.5373249]
+reactions:
+  - equation: H2 + M <=> 2 H + M
+    type: three-body
+    rate-constant: {A: 4.577e+16, b: -1.4, Ea: 4.368096e+08}
+    efficiencies: {C2H6: 3.0, CH4: 2.0, H2: 2.5}
+  - equation: CH3 + H (+M) <=> CH4 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 2.48e+27, b: -4.76, Ea: 1.020896e+07}
+    high-P-rate-constant: {A: 1.27e+13, b: -0.63, Ea: 1.602472e+06}
+    Troe: {A: 0.783, T3: 74.0, T1: 2941.0, T2: 6964.0}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: CH4 + H <=> CH3 + H2
+    rate-constant: {A: 614.0, b: 2.5, Ea: 4.0112008e+07}
+  - equation: CH2 + CH4 <=> 2 CH3
+    rate-constant: {A: 2460.0, b: 2.0, Ea: 3.460168e+07}
+  - equation: CH2 + H (+M) <=> CH3 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 3.2e+21, b: -3.14, Ea: 5.14632e+06}
+    high-P-rate-constant: {A: 2.5e+13, b: -0.8, Ea: 0.0}
+    Troe: {A: 0.68, T3: 78.0, T1: 1995.0, T2: 5590.0}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: CH2 + H <=> CH + H2
+    rate-constant: {A: 3.0e+10, b: 0.0, Ea: 0.0}
+  - equation: CH + H <=> C + H2
+    rate-constant: {A: 1.1e+11, b: 0.0, Ea: 0.0}
+  - equation: 2 CH3 (+M) <=> C2H6 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 8.05e+25, b: -3.75, Ea: 4.1070144e+06}
+    high-P-rate-constant: {A: 2.277e+12, b: -0.69, Ea: 7.317816e+05}
+    Troe: {A: 0.0, T3: 570.0, T1: 1.0e+30, T2: 1.0e+30}
+  - equation: C2H5 + H (+M) <=> C2H6 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 1.99e+35, b: -7.08, Ea: 2.797004e+07}
+    high-P-rate-constant: {A: 5.21e+14, b: -0.99, Ea: 6.61072e+06}
+    Troe: {A: 0.842, T3: 125.0, T1: 2219.0, T2: 6882.0}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C2H6 + H <=> C2H5 + H2
+    rate-constant: {A: 1.15e+05, b: 1.9, Ea: 3.150552e+07}
+  - equation: C2H6 + CH <=> C2H5 + CH2
+    rate-constant: {A: 1.1e+11, b: 0.0, Ea: -1.08784e+06}
+  - equation: C2H6 + CH3 <=> C2H5 + CH4
+    rate-constant: {A: 5.55e-07, b: 4.72, Ea: 1.3518504e+07}
+  - equation: C2H4 + H (+M) <=> C2H5 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 1.42e+33, b: -6.642, Ea: 2.4137496e+07}
+    high-P-rate-constant: {A: 9.569e+05, b: 1.463, Ea: 5.66932e+06}
+    Troe: {A: -0.569, T3: 299.0, T1: -9147.0, T2: 152.4}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C2H5 + H <=> C2H4 + H2
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 0.0}
+  - equation: 2 C2H4 <=> C2H3 + C2H5
+    rate-constant: {A: 4.82e+11, b: 0.0, Ea: 2.9928152e+08}
+  - equation: C2H5 + CH3 <=> C2H4 + CH4
+    rate-constant: {A: 11.8, b: 2.45, Ea: -1.2221464e+07}
+  - equation: 2 CH3 <=> C2H5 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 1013.25, A: 4.74e+09, b: 0.105, Ea: 4.46194312e+07}
+      - {P: 1.01325e+04, A: 2.57e+10, b: -0.096, Ea: 4.77231224e+07}
+      - {P: 1.01325e+05, A: 3.1e+11, b: -0.362, Ea: 5.595054e+07}
+      - {P: 1.01325e+06, A: 2.15e+07, b: 0.885, Ea: 5.661998e+07}
+      - {P: 1.01325e+07, A: 0.1032, b: 3.23, Ea: 4.70118424e+07}
+  - equation: C2H3 + H (+M) <=> C2H4 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 1.4e+24, b: -3.86, Ea: 1.389088e+07}
+    high-P-rate-constant: {A: 6.08e+09, b: 0.27, Ea: 1.17152e+06}
+    Troe: {A: 0.782, T3: 207.5, T1: 2663.0, T2: 6095.0}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C2H4 + M <=> C2H2 + H2 + M
+    type: three-body
+    rate-constant: {A: 2.61e+13, b: 0.0, Ea: 2.83771432e+08}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C2H4 + H <=> C2H3 + H2
+    rate-constant: {A: 5.07e+04, b: 1.93, Ea: 5.41828e+07}
+  - equation: CH + CH4 <=> C2H4 + H
+    rate-constant: {A: 6.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H2 + H (+M) <=> C2H3 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 6.35e+25, b: -4.664, Ea: 1.581552e+07}
+    high-P-rate-constant: {A: 1.71e+07, b: 1.266, Ea: 1.1334456e+07}
+    Troe: {A: 0.788, T3: -1.02e+04, T1: 1.0e-30}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C2H3 + H <=> C2H2 + H2
+    rate-constant: {A: 9.6353e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H3 + CH3 <=> C2H2 + CH4
+    rate-constant: {A: 3.92e+08, b: 0.0, Ea: 0.0}
+  - equation: 2 C2H3 <=> C2H2 + C2H4
+    rate-constant: {A: 9.6e+08, b: 0.0, Ea: 0.0}
+  - equation: C2H + H (+M) <=> C2H2 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 3.75e+27, b: -4.8, Ea: 7.9496e+06}
+    high-P-rate-constant: {A: 1.0e+14, b: -1.0, Ea: 0.0}
+    Troe: {A: 0.646, T3: 132.0, T1: 1315.0, T2: 5566.0}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C2H2 + CH2 <=> C3H3 + H
+    rate-constant: {A: 1.2e+10, b: 0.0, Ea: 2.769808e+07}
+  - equation: C2H + H2 <=> C2H2 + H
+    rate-constant: {A: 490.0, b: 2.5, Ea: 2.34304e+06}
+  - equation: C3H8 (+M) <=> C2H5 + CH3 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 5.64e+71, b: -15.74, Ea: 4.13019376e+08}
+    high-P-rate-constant: {A: 1.29e+37, b: -5.84, Ea: 4.0743792e+08}
+    Troe: {A: 0.31, T3: 50.0, T1: 3000.0, T2: 9000.0}
+    efficiencies: {AR: 0.7, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C3H3 + C3H4P <=> C3H3 + C3H4A
+    rate-constant: {A: 6140.0, b: 1.74, Ea: 4.37228e+07}
+  - equation: C3H4P + H <=> C3H3 + H2
+    rate-constant: {A: 35.72, b: 2.825, Ea: 2.0171064e+07}
+  - equation: C3H4P + CH3 <=> C3H3 + CH4
+    rate-constant: {A: 1.8e+09, b: 0.0, Ea: 3.22168e+07}
+  - equation: C2H + C3H4P <=> C2H2 + C3H3
+    rate-constant: {A: 1.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H3 + C3H4P <=> C2H4 + C3H3
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.22168e+07}
+  - equation: C3H4A + H <=> C3H3 + H2
+    rate-constant: {A: 6.625, b: 3.095, Ea: 2.3104048e+07}
+  - equation: C3H4A + CH3 <=> C3H3 + CH4
+    rate-constant: {A: 1.3e+09, b: 0.0, Ea: 3.22168e+07}
+  - equation: C3H4P + H <=> C2H2 + CH3
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 101.325, A: 2.44e+07, b: 1.04, Ea: 1.665232e+07}
+      - {P: 3951.675, A: 3.89e+07, b: 0.989, Ea: 1.7212976e+07}
+      - {P: 1.01325e+05, A: 3.46e+09, b: 0.442, Ea: 2.2857192e+07}
+      - {P: 1.01325e+06, A: 1.72e+11, b: -0.01, Ea: 2.9848656e+07}
+      - {P: 1.01325e+07, A: 1.9e+12, b: -0.29, Ea: 3.4752304e+07}
+  - equation: C2H + C3H4A <=> C2H2 + C3H3
+    rate-constant: {A: 1.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H + C2H5 <=> C3H3 + CH3
+    rate-constant: {A: 1.81e+10, b: 0.0, Ea: 0.0}
+  - equation: C3H3 + H <=> C3H2 + H2
+    rate-constant: {A: 214.0, b: 2.52, Ea: 3.1183352e+07}
+  - equation: 2 C3H3 <=> C6H5 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 3999.29775, A: 1.0467e+51, b: -11.88, Ea: 1.20319288e+08}
+      - {P: 1.01325e+05, A: 1.6975e+45, b: -9.977, Ea: 1.5378292e+08}
+      - {P: 1.01325e+06, A: 3.6712e+23, b: -3.879, Ea: 1.21181192e+08}
+  - equation: 2 C3H3 <=> C6H6
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 3999.29775, A: 1.64e+63, b: -15.902, Ea: 1.15181336e+08}
+      - {P: 1.01325e+05, A: 3.1609e+52, b: -12.55, Ea: 9.3152576e+07}
+      - {P: 1.01325e+06, A: 3.8888e+47, b: -11.01, Ea: 8.501888e+07}
+  - equation: C3H3 + C3H4A <=> C6H6 + H
+    rate-constant: {A: 1.4e+09, b: 0.0, Ea: 4.17998336e+07}
+  - equation: C4H6 <=> C4H4 + H2
+    rate-constant: {A: 2.5e+15, b: 0.0, Ea: 3.962248e+08}
+  - equation: C4H6 + H <=> C2H3 + C2H4
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 1.01325e+04, A: 8.64e+30, b: -5.38, Ea: 9.7336576e+07}
+      - {P: 1.01325e+05, A: 6.48e+29, b: -4.91, Ea: 1.10783952e+08}
+      - {P: 1.01325e+06, A: 1.17e+17, b: -1.14, Ea: 9.6344968e+07}
+      - {P: 1.01325e+07, A: 5.67, b: 3.51, Ea: 6.868036e+07}
+  - equation: C4H6 + H <=> C3H4P + CH3
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 2.9288e+07}
+  - equation: C4H6 + H <=> C3H4A + CH3
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 2.9288e+07}
+  - equation: C2H2 + C2H3 <=> C4H4 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 1337.49, A: 7.2e+10, b: -0.48, Ea: 2.55224e+07}
+      - {P: 2664.8475, A: 5.0e+11, b: -0.71, Ea: 2.80328e+07}
+      - {P: 1.2159e+04, A: 4.6e+13, b: -1.25, Ea: 3.51456e+07}
+      - {P: 1.01325e+05, A: 2.0e+15, b: -1.68, Ea: 4.43504e+07}
+      - {P: 1.01325e+06, A: 4.9e+13, b: -1.13, Ea: 4.93712e+07}
+  - equation: 2 C2H3 <=> C4H6
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 2664.8475, A: 7.0e+54, b: -13.82, Ea: 7.3759736e+07}
+      - {P: 1.2159e+04, A: 1.5e+49, b: -11.97, Ea: 6.7178304e+07}
+      - {P: 1.01325e+05, A: 1.5e+39, b: -8.84, Ea: 5.2228872e+07}
+  - equation: C3H3 + CH2 <=> C4H4 + H
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H + C2H2 <=> C4H2 + H
+    rate-constant: {A: 9.6e+10, b: 0.0, Ea: 0.0}
+  - equation: C6H5 + H (+M) <=> C6H6 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 6.6e+69, b: -16.3, Ea: 2.9288e+07}
+    high-P-rate-constant: {A: 9.79e+10, b: 0.15, Ea: 0.0}
+    Troe: {A: 1.0, T3: 0.1, T1: 584.9, T2: 6113.0}
+    efficiencies: {CH4: 2.0, H2: 2.0}
+  - equation: C6H6 + H => C6H5 + H2
+    rate-constant: {A: 4.57e+05, b: 1.88, Ea: 6.2086376e+07}
+  - equation: C6H5 + H2 => C6H6 + H
+    rate-constant: {A: 16.9, b: 2.63, Ea: 1.9074856e+07}
+  - equation: C6H5 => C2H2 + C4H2 + H
+    rate-constant: {A: 4.3e+12, b: 0.62, Ea: 3.23398096e+08}
+  - equation: C2H2 + C4H4 <=> C6H6
+    rate-constant: {A: 4.47e+08, b: 0.0, Ea: 1.2556184e+08}
+  - equation: C4H3 + H <=> C4H4
+    rate-constant: {A: 3.4e+40, b: -9.01, Ea: 5.071008e+07}
+  - equation: C4H4 + H <=> C4H3 + H2
+    rate-constant: {A: 665.0, b: 2.53, Ea: 5.121216e+07}
+  - equation: C4H4 + CH3 <=> C4H3 + CH4
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 8.28432e+07}
+  - equation: C2H + C2H2 (+M) <=> C4H3 (+M)
+    type: falloff
+    low-P-rate-constant: {A: 1.24e+25, b: -4.718, Ea: 7.828264e+06}
+    high-P-rate-constant: {A: 8.3e+07, b: 0.899, Ea: -1.518792e+06}
+    Troe: {A: 1.0, T3: 100.0, T1: 5613.0, T2: 1.339e+04}
+    efficiencies: {C2H2: 2.5, C2H4: 2.5, C2H6: 3.0, CH4: 2.0, H2: 2.0}
+  - equation: C4H2 + H <=> C4H3
+    rate-constant: {A: 1.1e+39, b: -8.72, Ea: 6.40152e+07}
+  - equation: C4H3 + H <=> C4H2 + H2
+    rate-constant: {A: 3.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H3 + C4H3 <=> 2 C3H3
+    rate-constant: {A: 4.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C3H3 + CH <=> C4H3 + H
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C4H3 + CH2 <=> C2H + C3H4A
+    rate-constant: {A: 2.0e+10, b: 0.0, Ea: 0.0}
+  - equation: CH + CH3 <=> C2H3 + H
+    rate-constant: {A: 3.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C + CH3 <=> C2H2 + H
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 0.0}
+  - equation: 2 C2H2 <=> C2H + C2H3
+    rate-constant: {A: 1.7e+11, b: 0.0, Ea: 3.84928e+08}
+  - equation: C2H2 + C2H6 <=> C2H3 + C2H5
+    rate-constant: {A: 2.0e+11, b: 0.0, Ea: 2.5104e+08}
+  - equation: 2 CH3 => C2H4 + H2
+    rate-constant: {A: 5.0e+11, b: 0.0, Ea: 1.33888e+08}
+  - equation: 2 CH2 => C2H2 + 2 H
+    rate-constant: {A: 1.2e+11, b: 0.0, Ea: 0.0}
+  - equation: CH + CH2 <=> C2H2 + H
+    rate-constant: {A: 4.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C + CH2 <=> C2H + H
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H2 + CH <=> C3H2 + H
+    rate-constant: {A: 8.4e+10, b: 0.0, Ea: 0.0}
+  - equation: 2 C3H3 => C2H2 + C4H4
+    rate-constant: {A: 1.0e+08, b: 0.0, Ea: 0.0}
+  - equation: C3H3 + CH3 <=> C4H6
+    rate-constant: {A: 4.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C3H3 <=> C3H2 + H
+    rate-constant: {A: 1.0e+13, b: 0.0, Ea: 4.05848e+08}
+  - equation: C2H6 <=> C2H4 + H2
+    rate-constant: {A: 3.0e+13, b: 0.0, Ea: 3.28444e+08}
+  - equation: C4H4 <=> C4H2 + H2
+    rate-constant: {A: 5.0e+11, b: 0.0, Ea: 2.76144e+08}
+  - equation: C2H2 + C2H4 <=> C4H6
+    rate-constant: {A: 5.0e+07, b: 0.0, Ea: 1.12968e+08}
+  - equation: 2 C2H2 <=> C4H4
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 1.54808e+08}
+  - equation: 2 C2H2 <=> C4H2 + H2
+    rate-constant: {A: 1.0e+13, b: 0.0, Ea: 2.853488e+08}
+  - equation: 2 C3H2 <=> C2H2 + C4H2
+    rate-constant: {A: 2.0e+10, b: 0.0, Ea: 3.5564e+08}
+  - equation: C2H4 + C4H2 => C6H6
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 1.2552e+08}
+  - equation: C3H3 + H <=> C3H4A
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4053.0, A: 3.39e+33, b: -7.41, Ea: 2.6514008e+07}
+      - {P: 1.01325e+05, A: 3.16e+26, b: -5.0, Ea: 1.9710824e+07}
+      - {P: 1.01325e+06, A: 8.71e+20, b: -3.2, Ea: 1.361892e+07}
+      - {P: 1.01325e+07, A: 2.05e+10, b: 0.206, Ea: -7.23832e+05}
+  - equation: C3H3 + H <=> C3H4P
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4053.0, A: 3.63e+33, b: -7.36, Ea: 2.5267176e+07}
+      - {P: 1.01325e+05, A: 7.94e+26, b: -5.06, Ea: 2.0338424e+07}
+      - {P: 1.01325e+06, A: 1.07e+21, b: -3.15, Ea: 1.3644024e+07}
+      - {P: 1.01325e+07, A: 6.4e+10, b: 0.102, Ea: -1.305408e+05}
+  - equation: C2H + C2H3 <=> C4H4
+    rate-constant: {A: 1.0e+11, b: 0.0, Ea: 0.0}
+  - equation: C2H2 + C4H4 <=> C2H3 + C4H3
+    rate-constant: {A: 3.0e+11, b: 0.0, Ea: 3.05432e+08}
+  - equation: C3H2 + CH3 <=> C4H4 + H
+    rate-constant: {A: 2.5e+09, b: 0.0, Ea: 0.0}
+  - equation: 2 C2H2 <=> C4H3 + H
+    rate-constant: {A: 2.0e+13, b: 0.0, Ea: 3.40996e+08}
+  - equation: C3H2 + CH <=> C4H2 + H
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C3H3 + CH <=> C4H2 + 2 H
+    rate-constant: {A: 5.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H2 + C4H2 <=> C2H + C4H3
+    rate-constant: {A: 3.0e+11, b: 0.0, Ea: 4.05848e+08}
+  - equation: C2H + C3H4P => C4H2 + CH3
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: 2 C3H4A => C2H4 + C4H4
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 1.21336e+08}
+  - equation: 2 C3H4P => C2H4 + C4H4
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 1.21336e+08}
+  - equation: 2 C4H4 => C2H2 + C6H6
+    rate-constant: {A: 2.5e+11, b: 0.0, Ea: 1.84096e+08}
+  - equation: C4H3 + CH2 <=> C2H + C3H4P
+    rate-constant: {A: 2.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C5H5 => C2H2 + C3H3
+    rate-constant: {A: 2.0e+12, b: 0.0, Ea: 2.84512e+08}
+  - equation: C4H2 + CH3 => C5H5
+    rate-constant: {A: 1.0e+08, b: 0.0, Ea: 3.17984e+07}
+  - equation: C5H5 + CH3 => C2H2 + C4H6
+    rate-constant: {A: 1.5e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C5H5 + CH3 => C2H4 + C4H4
+    rate-constant: {A: 1.5e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C2H3 + C4H3 => C6H6
+    rate-constant: {A: 1.0e+10, b: 0.0, Ea: 0.0}
+  - equation: C2H3 + C4H3 <=> C6H5 + H
+    rate-constant: {A: 6.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C2H3 + C4H4 => C6H6 + H
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 2.5104e+07}
+  - equation: C2H3 + C4H6 => C6H6 + H + H2
+    rate-constant: {A: 5.62e+08, b: 0.0, Ea: 1.355616e+07}
+  - equation: C2H + C4H6 => C6H6 + H
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C3H3 + C3H4P <=> C6H6 + H
+    rate-constant: {A: 1.4e+09, b: 0.0, Ea: 4.184e+07}
+  - equation: C2H4 + C4H3 => C6H6 + H
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 2.092e+07}
+  - equation: C5H5 + C6H6 => C10H8 + CH3
+    rate-constant: {A: 3.0e+09, b: 0.0, Ea: 9.6232e+07}
+  - equation: 2 C5H5 => C10H8 + 2 H
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 2.5104e+07}
+  - equation: C4H3 + C6H6 => C10H8 + H
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 2.092e+07}
+  - equation: C4H6 + C6H6 => C10H8 + 2 H + H2
+    rate-constant: {A: 1.0e+08, b: 0.0, Ea: 1.2552e+08}
+  - equation: C4H4 + C6H5 => C10H8 + H
+    rate-constant: {A: 12.6, b: 2.61, Ea: 5.98312e+06}
+  - equation: C10H8 + H => C4H4 + C6H5
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C3H4P <=> C3H4A
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 1.01325e+04, A: 6.4e+61, b: -14.59, Ea: 3.690288e+08}
+      - {P: 1.01325e+05, A: 5.2e+60, b: -13.93, Ea: 3.811624e+08}
+      - {P: 1.01325e+06, A: 1.9e+57, b: -12.62, Ea: 3.903672e+08}
+      - {P: 1.01325e+07, A: 1.4e+52, b: -10.86, Ea: 3.991536e+08}
+  - equation: C2H3 + C4H2 => C6H5
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 2.5104e+07}
+  - equation: C10H7 + H2 => C10H8 + H
+    rate-constant: {A: 5.18e+05, b: 1.0, Ea: 1.515043136e+07}
+  - equation: C6H5 + CH4 => C6H6 + CH3
+    rate-constant: {A: 2.59e+05, b: 1.0, Ea: 2.353554392e+07}
+  - equation: C10H7 + CH4 => C10H8 + CH3
+    rate-constant: {A: 2.59e+05, b: 1.0, Ea: 2.353554392e+07}
+  - equation: C2H2 + CH3 => C2H + CH4
+    rate-constant: {A: 60.0, b: 2.0, Ea: 4.684628152e+07}
+  - equation: C2H2 + C2H3 => C2H + C2H4
+    rate-constant: {A: 135.6, b: 2.0, Ea: 4.113817584e+07}
+  - equation: C2H2 + C2H5 => C2H + C2H6
+    rate-constant: {A: 40.0, b: 2.0, Ea: 5.550234992e+07}
+  - equation: C2H2 + C4H3 => C2H + C4H4
+    rate-constant: {A: 81.8, b: 2.0, Ea: 4.787424848e+07}
+  - equation: C2H2 + C6H5 => C2H + C6H6
+    rate-constant: {A: 7.4e+04, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C10H7 + C2H2 => C10H8 + C2H
+    rate-constant: {A: 7.4e+04, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C2H3 + C2H6 => C2H4 + C2H5
+    rate-constant: {A: 610.2, b: 2.0, Ea: 2.386913424e+07}
+  - equation: C2H6 + C4H3 => C2H5 + C4H4
+    rate-constant: {A: 368.1, b: 2.0, Ea: 2.991430296e+07}
+  - equation: C2H6 + C6H5 => C2H5 + C6H6
+    rate-constant: {A: 3.33e+05, b: 1.0, Ea: 1.393309656e+07}
+  - equation: C2H6 + C3H3 => C2H5 + C3H4A
+    rate-constant: {A: 243.0, b: 2.0, Ea: 6.922704144e+07}
+  - equation: C10H7 + C2H6 => C10H8 + C2H5
+    rate-constant: {A: 3.33e+05, b: 1.0, Ea: 1.393309656e+07}
+  - equation: C2H4 + C2H5 => C2H3 + C2H6
+    rate-constant: {A: 160.0, b: 2.0, Ea: 5.357553424e+07}
+  - equation: C2H4 + C4H3 => C2H3 + C4H4
+    rate-constant: {A: 327.2, b: 2.0, Ea: 4.319486288e+07}
+  - equation: C2H4 + C6H5 => C2H3 + C6H6
+    rate-constant: {A: 2.96e+05, b: 1.0, Ea: 2.32657596e+07}
+  - equation: C2H4 + C3H3 => C2H3 + C3H4A
+    rate-constant: {A: 216.0, b: 2.0, Ea: 8.637022832e+07}
+  - equation: C10H7 + C2H4 => C10H8 + C2H3
+    rate-constant: {A: 2.96e+05, b: 1.0, Ea: 2.32657596e+07}
+  - equation: C2H3 + C3H4A => C2H4 + C3H3
+    rate-constant: {A: 4068.0, b: 2.0, Ea: 4.411182832e+07}
+  - equation: C2H5 + C3H4A => C2H6 + C3H3
+    rate-constant: {A: 1200.0, b: 2.0, Ea: 5.667504144e+07}
+  - equation: C3H4A + C4H3 => C3H3 + C4H4
+    rate-constant: {A: 2454.0, b: 2.0, Ea: 5.072225544e+07}
+  - equation: C3H4A + C6H5 => C3H3 + C6H6
+    rate-constant: {A: 2.22e+06, b: 1.0, Ea: 3.112523624e+07}
+  - equation: C10H7 + C3H4A => C10H8 + C3H3
+    rate-constant: {A: 2.22e+06, b: 1.0, Ea: 3.112523624e+07}
+  - equation: C2H5 + C3H4P => C2H6 + C3H3
+    rate-constant: {A: 1200.0, b: 2.0, Ea: 5.667504144e+07}
+  - equation: C3H4P + C4H3 => C3H3 + C4H4
+    rate-constant: {A: 2454.0, b: 2.0, Ea: 5.072225544e+07}
+  - equation: C3H4P + C6H5 => C3H3 + C6H6
+    rate-constant: {A: 2.22e+06, b: 1.0, Ea: 3.112523624e+07}
+  - equation: C10H7 + C3H4P => C10H8 + C3H3
+    rate-constant: {A: 2.22e+06, b: 1.0, Ea: 3.112523624e+07}
+  - equation: C2H3 + C4H4 => C2H4 + C4H3
+    rate-constant: {A: 949.2, b: 2.0, Ea: 3.650046288e+07}
+  - equation: C2H5 + C4H4 => C2H6 + C4H3
+    rate-constant: {A: 280.0, b: 2.0, Ea: 5.292626112e+07}
+  - equation: C4H4 + C6H5 => C4H3 + C6H6
+    rate-constant: {A: 5.18e+05, b: 1.0, Ea: 2.372671088e+07}
+  - equation: C3H3 + C4H4 => C3H4A + C4H3
+    rate-constant: {A: 378.0, b: 2.0, Ea: 8.628625544e+07}
+  - equation: C10H7 + C4H4 => C10H8 + C4H3
+    rate-constant: {A: 5.18e+05, b: 1.0, Ea: 2.372671088e+07}
+  - equation: C6H6 + CH3 => C6H5 + CH4
+    rate-constant: {A: 480.0, b: 2.0, Ea: 3.734274392e+07}
+  - equation: C2H3 + C6H6 => C2H4 + C6H5
+    rate-constant: {A: 1084.8, b: 2.0, Ea: 3.12153596e+07}
+  - equation: C2H5 + C6H6 => C2H6 + C6H5
+    rate-constant: {A: 320.0, b: 2.0, Ea: 5.158909656e+07}
+  - equation: C4H3 + C6H6 => C4H4 + C6H5
+    rate-constant: {A: 654.4, b: 2.0, Ea: 3.837071088e+07}
+  - equation: C3H3 + C6H6 => C3H4A + C6H5
+    rate-constant: {A: 432.0, b: 2.0, Ea: 8.133323624e+07}
+  - equation: C10H7 + C6H6 => C10H8 + C6H5
+    rate-constant: {A: 5.92e+05, b: 1.0, Ea: 1.822876752e+07}
+  - equation: C2H + C4H4 <=> C6H5
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 0.0}
+  - equation: C2H2 + C4H3 => C6H5
+    rate-constant: {A: 4.0e+08, b: 0.0, Ea: 2.092e+07}
+  - equation: C7H7 + H <=> C6H5 + CH3
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4002.3375, A: 4.5e+55, b: -11.9, Ea: 2.1698224e+08}
+      - {P: 1.33749e+04, A: 2.03e+61, b: -13.37, Ea: 2.4903168e+08}
+      - {P: 1.01325e+05, A: 5.83e+64, b: -14.15, Ea: 2.8589272e+08}
+      - {P: 1.01325e+06, A: 8.85e+65, b: -14.23, Ea: 3.2806744e+08}
+  - equation: C7H7 => C3H3 + C4H4
+    rate-constant: {A: 1.0e+14, b: 0.0, Ea: 3.497824e+08}
+  - equation: C3H3 + C4H4 => C7H7
+    rate-constant: {A: 2.0e+10, b: 0.0, Ea: 6.276e+07}
+  - equation: LC6H5 => C2H2 + C4H3
+    rate-constant: {A: 1.0e+14, b: 0.0, Ea: 1.58992e+08}
+  - equation: LC6H5 => C2H + 2 C2H2
+    rate-constant: {A: 2.0e+14, b: 0.0, Ea: 1.58992e+08}
+  - equation: C7H7 => C7H6 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 1317.225, A: 2.24e+129, b: -32.57, Ea: 6.7952344e+08}
+      - {P: 1.317225e+04, A: 6.45e+122, b: -30.34, Ea: 6.8546472e+08}
+      - {P: 1.01325e+05, A: 1.48e+97, b: -22.95, Ea: 6.2040352e+08}
+      - {P: 1.519875e+05, A: 4.1e+14, b: 0.0, Ea: 3.376488e+08}
+      - {P: 1.01325e+06, A: 6.3e+38, b: -6.76, Ea: 4.1718664e+08}
+      - {P: 5.06625e+06, A: 7.2e+12, b: 0.453, Ea: 3.192392e+08}
+  - equation: C7H6 + H => C7H7
+    rate-constant: {A: 4.4e+05, b: 1.2, Ea: -8.45168e+06}
+  - equation: C6H5 + M <=> LC6H5 + M
+    type: three-body
+    rate-constant: {A: 3.0e+15, b: 0.0, Ea: 2.80328e+08}
+  - equation: C2H2 + C6H5C2H => C10H8
+    rate-constant: {A: 2.0e+08, b: 0.0, Ea: 1.06692e+08}
+  - equation: C4H2 + C6H6 => C10H8
+    rate-constant: {A: 1.5e+08, b: 0.0, Ea: 9.414e+07}
+  - equation: 2 C4H4 => C6H5C2H + H2
+    rate-constant: {A: 1.0e+11, b: 0.0, Ea: 1.84096e+08}
+  - equation: C4H6 + C6H5C2H => C10H8 + C2H4
+    rate-constant: {A: 5.0e+08, b: 0.0, Ea: 1.2552e+08}
+  - equation: 2 C6H4C2H => C16H10
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C10H7 + C6H4C2H => C18H10 + 2 H
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C10H7 + C6H5 => C16H10 + 2 H
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C12H7 + C6H5 => C18H10 + 2 H
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C3H3 + C6H4C2H => 0.5 C10H8 + 0.5 C12H8
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 1.2552e+07}
+  - equation: C14H9 + C3H3 => 0.5 C16H10 + 0.5 C18H10 + 2 H
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 1.2552e+07}
+  - equation: C12H7 + C5H5 => 0.5 C16H10 + 0.5 C18H10 + 2 H
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 1.2552e+07}
+  - equation: C14H9 + C5H5 => C18H10 + CH3 + H
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 1.2552e+07}
+  - equation: C10H7 + C7H7 => C16H10 + CH3 + H
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 1.2552e+07}
+  - equation: C12H7 + C7H7 => C18H10 + CH3 + H
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 1.2552e+07}
+  - equation: C3H3 + C5H5 => C6H5C2H + H2
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C5H5 + C7H7 => C12H8 + 2 H + H2
+    rate-constant: {A: 2.0e+09, b: 0.0, Ea: 2.5104e+07}
+  - equation: C2H + C6H6 <=> C6H5C2H + H
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 0.0}
+  - equation: C10H8 + C2H => C12H8 + H
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C12H8 + C2H => C14H9
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C2H + C6H5C2H => C10H7
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C16H10 + C2H <=> C18H10 + H
+    rate-constant: {A: 3.0e+08, b: 0.0, Ea: 3.3472e+07}
+  - equation: C2H2 + C6H5 <=> C6H5C2H + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4053.0, A: 8.56e+14, b: -1.33, Ea: 5.309496e+07}
+      - {P: 1.01325e+05, A: 1.1e+28, b: -4.83, Ea: 1.1137808e+08}
+      - {P: 1.01325e+06, A: 3.38e+30, b: -5.39, Ea: 1.3677496e+08}
+      - {P: 1.01325e+07, A: 1.13e+30, b: -5.11, Ea: 1.5823888e+08}
+  - equation: C10H7 + C2H2 <=> C12H8 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4053.0, A: 8.56e+14, b: -1.33, Ea: 5.309496e+07}
+      - {P: 1.01325e+05, A: 1.1e+28, b: -4.83, Ea: 1.1137808e+08}
+      - {P: 1.01325e+06, A: 3.38e+30, b: -5.39, Ea: 1.3677496e+08}
+      - {P: 1.01325e+07, A: 1.13e+30, b: -5.11, Ea: 1.5823888e+08}
+  - equation: C14H9 + C2H2 <=> C16H10 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4053.0, A: 8.56e+14, b: -1.33, Ea: 5.309496e+07}
+      - {P: 1.01325e+05, A: 1.1e+28, b: -4.83, Ea: 1.1137808e+08}
+      - {P: 1.01325e+06, A: 3.38e+30, b: -5.39, Ea: 1.3677496e+08}
+      - {P: 1.01325e+07, A: 1.13e+30, b: -5.11, Ea: 1.5823888e+08}
+  - equation: C16H9 + C2H2 => C18H10 + H
+    type: pressure-dependent-Arrhenius
+    rate-constants:
+      - {P: 4053.0, A: 8.56e+14, b: -1.33, Ea: 5.309496e+07}
+      - {P: 1.01325e+05, A: 1.1e+28, b: -4.83, Ea: 1.1137808e+08}
+      - {P: 1.01325e+06, A: 3.38e+30, b: -5.39, Ea: 1.3677496e+08}
+      - {P: 1.01325e+07, A: 1.13e+30, b: -5.11, Ea: 1.5823888e+08}
+  - equation: C12H7 + C2H2 => C14H9
+    rate-constant: {A: 3.0e+09, b: 0.0, Ea: 2.5104e+07}
+  - equation: C14H9 + C3H4A => C16H10 + CH3
+    rate-constant: {A: 3.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C16H9 + C3H4A => C18H10 + CH3
+    rate-constant: {A: 3.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C14H9 + C3H4P => C16H10 + CH3
+    rate-constant: {A: 3.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C16H9 + C3H4P => C18H10 + CH3
+    rate-constant: {A: 3.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C4H2 + C6H5 => C10H7
+    rate-constant: {A: 5.0e+09, b: 0.0, Ea: 2.092e+07}
+  - equation: C6H4C2H + C6H5C2H => C16H10 + H
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.3472e+07}
+  - equation: C10H8 + C6H4C2H => 0.5 C16H10 + 0.5 C18H10 + CH3
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.3472e+07}
+  - equation: C10H8 + C6H5 => C16H10 + H + H2
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.3472e+07}
+  - equation: C10H7 + C6H5C2H => 0.5 C16H10 + 0.5 C18H10 + CH3
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.3472e+07}
+  - equation: C10H7 + C6H6 => C16H10 + H + H2
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.3472e+07}
+  - equation: C12H7 + C6H6 => 0.5 C16H10 + 0.5 C18H10 + CH3
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 3.3472e+07}
+  - equation: C2H3 + C6H5C2H => C10H8 + H
+    rate-constant: {A: 1.0e+09, b: 0.0, Ea: 2.5104e+07}
+  - equation: C4H2 + C4H3 <=> C6H4C2H
+    rate-constant: {A: 1.0e+48, b: -11.56, Ea: 9.4336648e+07}
+  - equation: C12H8 + C5H5 => 0.5 C16H10 + 0.5 C18H10 + H + H2
+    rate-constant: {A: 4.0e+08, b: 0.0, Ea: 7.9496e+07}
+  - equation: C6H5C2H + H => C6H4C2H + H2
+    rate-constant: {A: 3.0e+04, b: 2.0, Ea: 4.166117584e+07}
+  - equation: C6H5C2H + CH3 => C6H4C2H + CH4
+    rate-constant: {A: 300.0, b: 2.0, Ea: 4.684628152e+07}
+  - equation: C2H3 + C6H5C2H => C2H4 + C6H4C2H
+    rate-constant: {A: 678.0, b: 2.0, Ea: 4.113817584e+07}
+  - equation: C2H5 + C6H5C2H => C2H6 + C6H4C2H
+    rate-constant: {A: 200.0, b: 2.0, Ea: 5.550234992e+07}
+  - equation: C4H3 + C6H5C2H => C4H4 + C6H4C2H
+    rate-constant: {A: 409.0, b: 2.0, Ea: 4.787424848e+07}
+  - equation: C6H5 + C6H5C2H => C6H4C2H + C6H6
+    rate-constant: {A: 3.7e+05, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C3H3 + C6H5C2H => C3H4A + C6H4C2H
+    rate-constant: {A: 270.0, b: 2.0, Ea: 9.125605248e+07}
+  - equation: C10H7 + C6H5C2H => C10H8 + C6H4C2H
+    rate-constant: {A: 3.7e+05, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C10H8 + CH3 => C10H7 + CH4
+    rate-constant: {A: 480.0, b: 2.0, Ea: 3.734274392e+07}
+  - equation: C10H8 + C2H3 => C10H7 + C2H4
+    rate-constant: {A: 1084.8, b: 2.0, Ea: 3.12153596e+07}
+  - equation: C10H8 + C2H5 => C10H7 + C2H6
+    rate-constant: {A: 320.0, b: 2.0, Ea: 5.158909656e+07}
+  - equation: C10H8 + C4H3 => C10H7 + C4H4
+    rate-constant: {A: 654.4, b: 2.0, Ea: 3.837071088e+07}
+  - equation: C10H8 + C6H5 => C10H7 + C6H6
+    rate-constant: {A: 5.92e+05, b: 1.0, Ea: 1.822876752e+07}
+  - equation: C10H8 + C3H3 => C10H7 + C3H4A
+    rate-constant: {A: 432.0, b: 2.0, Ea: 8.133323624e+07}
+  - equation: C12H8 + CH3 => C12H7 + CH4
+    rate-constant: {A: 480.0, b: 2.0, Ea: 4.684628152e+07}
+  - equation: C12H8 + C2H3 => C12H7 + C2H4
+    rate-constant: {A: 1084.8, b: 2.0, Ea: 4.113817584e+07}
+  - equation: C12H8 + C2H5 => C12H7 + C2H6
+    rate-constant: {A: 320.0, b: 2.0, Ea: 5.550234992e+07}
+  - equation: C12H8 + C4H3 => C12H7 + C4H4
+    rate-constant: {A: 654.4, b: 2.0, Ea: 4.787424848e+07}
+  - equation: C12H8 + C6H5 => C12H7 + C6H6
+    rate-constant: {A: 5.92e+05, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C12H8 + C3H3 => C12H7 + C3H4A
+    rate-constant: {A: 432.0, b: 2.0, Ea: 9.125605248e+07}
+  - equation: C10H7 + C12H8 => C10H8 + C12H7
+    rate-constant: {A: 5.92e+05, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C16H10 + CH3 => C16H9 + CH4
+    rate-constant: {A: 840.0, b: 2.0, Ea: 4.684628152e+07}
+  - equation: C16H10 + C2H3 => C16H9 + C2H4
+    rate-constant: {A: 1898.4, b: 2.0, Ea: 4.113817584e+07}
+  - equation: C16H10 + C2H5 => C16H9 + C2H6
+    rate-constant: {A: 560.0, b: 2.0, Ea: 5.550234992e+07}
+  - equation: C16H10 + C4H3 => C16H9 + C4H4
+    rate-constant: {A: 1145.2, b: 2.0, Ea: 4.787424848e+07}
+  - equation: C16H10 + C6H5 => C16H9 + C6H6
+    rate-constant: {A: 1.036e+06, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C16H10 + C3H3 => C16H9 + C3H4A
+    rate-constant: {A: 756.0, b: 2.0, Ea: 9.125605248e+07}
+  - equation: C10H7 + C16H10 => C10H8 + C16H9
+    rate-constant: {A: 1.036e+06, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C18H10 + CH3 => C18H9 + CH4
+    rate-constant: {A: 840.0, b: 2.0, Ea: 4.684628152e+07}
+  - equation: C18H10 + C2H3 => C18H9 + C2H4
+    rate-constant: {A: 1898.4, b: 2.0, Ea: 4.113817584e+07}
+  - equation: C18H10 + C2H5 => C18H9 + C2H6
+    rate-constant: {A: 560.0, b: 2.0, Ea: 5.550234992e+07}
+  - equation: C18H10 + C4H3 => C18H9 + C4H4
+    rate-constant: {A: 1145.2, b: 2.0, Ea: 4.787424848e+07}
+  - equation: C18H10 + C6H5 => C18H9 + C6H6
+    rate-constant: {A: 1.036e+06, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C18H10 + C3H3 => C18H9 + C3H4A
+    rate-constant: {A: 756.0, b: 2.0, Ea: 9.125605248e+07}
+  - equation: C10H7 + C18H10 => C10H8 + C18H9
+    rate-constant: {A: 1.036e+06, b: 1.0, Ea: 2.815158376e+07}
+  - equation: C10H8 + H => C10H7 + H2
+    rate-constant: {A: 3.851e+04, b: 2.0, Ea: 4.384844552e+07}
+  - equation: C12H8 + H => C12H7 + H2
+    rate-constant: {A: 3.851e+04, b: 2.0, Ea: 4.384844552e+07}
+  - equation: C16H10 + H => C16H9 + H2
+    rate-constant: {A: 6.739e+04, b: 2.0, Ea: 4.384844552e+07}
+  - equation: C18H10 + H => C18H9 + H2
+    rate-constant: {A: 8.4e+04, b: 2.0, Ea: 4.384844552e+07}
+  - equation: C10H8 <=> C10H7 + H
+    rate-constant: {A: 5.0e+15, b: 0.0, Ea: 4.85344e+08}
+  - equation: C6H4C2H + H <=> C6H5C2H
+    rate-constant: {A: 1.0e+11, b: 0.0, Ea: 0.0}
+  - equation: C12H7 + H <=> C12H8
+    rate-constant: {A: 1.0e+11, b: 0.0, Ea: 0.0}
+  - equation: C16H9 + H <=> C16H10
+    rate-constant: {A: 1.0e+11, b: 0.0, Ea: 0.0}
+  - equation: C18H9 + H <=> C18H10
+    rate-constant: {A: 1.0e+11, b: 0.0, Ea: 0.0}

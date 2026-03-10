@@ -16,19 +16,60 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 
 # user input, to be manipulated using GUI? xd
-project_name = "COMSOL_260306b"
-input_folder = str(BASE_DIR / "COMSOL_260306b_conditions")
+project_name = "COMSOL_260309b"
+input_folder = str(BASE_DIR / "COMSOL_260309b_conditions")
 sensitivity_tolerance = 1e-3
 excluded_species = ['CH4', 'CO2','H','H2','CO','H2O','CH3','O2','O','H2O']
 model_type = "COMSOL_thermal"
 comparator_type = "max" # "lin", "log", "max"
+comsol_parallel_standard_runs = True
 
 # Optional files, depending on model choice
 chemkin_kinet = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_pyro_COMSOL.CKI.txt")
 chemkin_thermo = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_therm_pyro_COMSOL.CKT.txt")
-comsol_therm_model = str(BASE_DIR / "0D_260306b.mph")
+comsol_therm_model = str(BASE_DIR / "0D_260309b.mph")
 comsol_plasma_model = str(BASE_DIR / "plasma_model.mph")
 
+
+def _initialize_worker(comsol_cores_per_task: int = 1):
+    """Load the selected model once per worker process."""
+
+    match model_type:
+        case "ChemKIN":
+            fromchemKIN.load_model_to_yaml(chemkin_kinet, chemkin_thermo)
+        case "COMSOL_thermal":
+            fromcomsolRE.set_comsol_cores(comsol_cores_per_task)
+            fromcomsolRE.load_comsol_model(comsol_therm_model)
+        case "COMSOL_plasma":
+            raise NotImplementedError("I didnt implement COMSOL plasma yet lole")
+        case _:
+            raise ValueError(f"{model_type} doesn't exist")
+
+
+def _pool_configuration(total_jobs: int, *, default_cap: int | None = None) -> tuple[int, int]:
+    """Choose worker count and per-task CPU allocation.
+
+    Rules:
+    - reserve at least one CPU outside the worker pool whenever possible
+    - if there is enough headroom, assign multiple CPUs per COMSOL task
+    - if there are more jobs than workers, the executor queue becomes the schedule
+    """
+
+    cpu_count = multiprocessing.cpu_count()
+    reserved_cpus = 1 if cpu_count > 1 else 0
+    available_cpus = max(1, cpu_count - reserved_cpus)
+    cap = available_cpus if default_cap is None else min(available_cpus, default_cap)
+
+    if model_type == "COMSOL_thermal":
+        cap = min(cap, 10)
+
+    worker_count = max(1, min(total_jobs, cap))
+    comsol_cores_per_task = 1
+
+    if model_type == "COMSOL_thermal":
+        comsol_cores_per_task = max(1, available_cpus // worker_count)
+
+    return worker_count, comsol_cores_per_task
 # Code start, good luck
 def check_project_similarity():
     # check if it's the same project
@@ -47,17 +88,94 @@ def _run_standard_single_condition(condition):
     Runs the standard model for one condition.
     """
 
-    match model_type:
-        case "ChemKIN":
-            time_vals, result_dict = fromchemKIN.run_standard_model(condition)
-            return time_vals, result_dict
-        case "COMSOL_plasma":
-            raise NotImplementedError("I didnt implement COMSOL plasma yet lole")
-        case "COMSOL_thermal":
-            time_vals, result_dict = fromcomsolRE.run_standard_model(condition)
-            return time_vals, result_dict
-        case _:
-            raise ValueError(f"{model_type} doesn't exist")
+    try:
+        match model_type:
+            case "ChemKIN":
+                time_vals, result_dict = fromchemKIN.run_standard_model(condition)
+                return time_vals, result_dict
+            case "COMSOL_plasma":
+                raise NotImplementedError("I didnt implement COMSOL plasma yet lole")
+            case "COMSOL_thermal":
+                time_vals, result_dict = fromcomsolRE.run_standard_model(condition)
+                return time_vals, result_dict
+            case _:
+                raise ValueError(f"{model_type} doesn't exist")
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from None
+
+
+def _run_standard_condition_group(group):
+    """Run one ordered group of COMSOL conditions inside a single worker."""
+
+    indexed_conditions = list(group)
+    ordered_conditions = [condition for _, condition in indexed_conditions]
+
+    try:
+        match model_type:
+            case "COMSOL_thermal":
+                time_vals_list, result_dicts = fromcomsolRE.run_standard_models(ordered_conditions)
+                return [
+                    (index, time_vals, result_dict)
+                    for (index, _), time_vals, result_dict in zip(indexed_conditions, time_vals_list, result_dicts)
+                ]
+            case _:
+                raise ValueError("Grouped standard runs are only used for COMSOL thermal models.")
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from None
+
+
+def _group_comsol_standard_conditions(conditions):
+    """Group COMSOL standard conditions to preserve useful continuation paths."""
+
+    groups: dict[float, list[tuple[int, object]]] = {}
+
+    for index, condition in enumerate(conditions):
+        key = float(condition.get_molar_fraction("CH4") or 0.0)
+        groups.setdefault(key, []).append((index, condition))
+
+    ordered_groups = []
+    for key in sorted(groups):
+        ordered_groups.append(
+            sorted(
+                groups[key],
+                key=lambda item: (
+                    item[1].get_temperature()[1][0],
+                    item[1].get_temperature()[1][-1],
+                    item[0],
+                ),
+            )
+        )
+
+    return ordered_groups
+
+
+def _ordered_comsol_study_conditions(conditions):
+    """Return the conditions in the original COMSOL study order."""
+
+    return sorted(
+        list(enumerate(conditions)),
+        key=lambda item: (
+            0 if item[1].get_temperature()[1][0] < item[1].get_temperature()[1][-1] else 1,
+            float(item[1].get_molar_fraction("CH4") or 0.0),
+            item[0],
+        ),
+    )
+
+
+def _run_standard_condition_with_gui_continuation(target_index, conditions, comsol_cores_per_task: int):
+    """Replay the saved COMSOL sweep order up to one target condition."""
+
+    ordered_conditions = _ordered_comsol_study_conditions(conditions)
+    target_position = next(
+        position
+        for position, (index, _) in enumerate(ordered_conditions)
+        if index == target_index
+    )
+    replay_conditions = [condition for _, condition in ordered_conditions[:target_position + 1]]
+
+    fromcomsolRE.set_comsol_cores(comsol_cores_per_task)
+    time_values, result_dicts = fromcomsolRE.run_standard_models(replay_conditions)
+    return time_values[-1], result_dicts[-1]
 
 
 def _reduced_species_error_worker(args):
@@ -73,19 +191,22 @@ def _reduced_species_error_worker(args):
      comparator_mode) = args
 
     # Run reduced simulation
-    match model_type:
-        case "ChemKIN":
-            time_vals, result_dict = fromchemKIN.run_reduced_species_model(
-                condition,
-                [omitted_species] if isinstance(omitted_species, str) else omitted_species
-            )
-        case "COMSOL_thermal":
-            time_vals, result_dict = fromcomsolRE.run_reduced_species_model(
-                condition,
-                [omitted_species] if isinstance(omitted_species, str) else omitted_species
-            )
-        case _:
-            raise ValueError(f"{model_type} doesn't exist")
+    try:
+        match model_type:
+            case "ChemKIN":
+                time_vals, result_dict = fromchemKIN.run_reduced_species_model(
+                    condition,
+                    [omitted_species] if isinstance(omitted_species, str) else omitted_species
+                )
+            case "COMSOL_thermal":
+                time_vals, result_dict = fromcomsolRE.run_reduced_species_model(
+                    condition,
+                    [omitted_species] if isinstance(omitted_species, str) else omitted_species
+                )
+            case _:
+                raise ValueError(f"{model_type} doesn't exist")
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from None
 
     # Compute error immediately
     match comparator_mode:
@@ -137,21 +258,24 @@ def _reduced_reactions_error_worker(args):
      comparator_mode) = args
 
     # Run reduced reaction simulation
-    match model_type:
-        case "ChemKIN":
-            time_vals, result_dict = fromchemKIN.run_reduced_reactions_model(
-                condition,
-                [omitted_species] if isinstance(omitted_species, str) else omitted_species,
-                [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
-            )
-        case "COMSOL_thermal":
-            time_vals, result_dict = fromcomsolRE.run_reduced_reactions_model(
-                condition,
-                [omitted_species] if isinstance(omitted_species, str) else omitted_species,
-                [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
-            )
-        case _:
-            raise ValueError(f"{model_type} doesn't exist")
+    try:
+        match model_type:
+            case "ChemKIN":
+                time_vals, result_dict = fromchemKIN.run_reduced_reactions_model(
+                    condition,
+                    [omitted_species] if isinstance(omitted_species, str) else omitted_species,
+                    [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
+                )
+            case "COMSOL_thermal":
+                time_vals, result_dict = fromcomsolRE.run_reduced_reactions_model(
+                    condition,
+                    [omitted_species] if isinstance(omitted_species, str) else omitted_species,
+                    [omitted_reactions] if isinstance(omitted_reactions, str) else omitted_reactions
+                )
+            case _:
+                raise ValueError(f"{model_type} doesn't exist")
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from None
 
     # Compute error immediately
     match comparator_mode:
@@ -191,17 +315,120 @@ def run_standard_models_parallel(conditions):
     If this doesn't run smooth, nothing will.
     """
 
-    cpu_count = multiprocessing.cpu_count()
     total_jobs = len(conditions)
 
-    print(f"Running {total_jobs} simulations using {cpu_count} CPU cores")
+    if model_type == "COMSOL_thermal" and comsol_parallel_standard_runs:
+        condition_groups = _group_comsol_standard_conditions(conditions)
+        worker_count, comsol_cores_per_task = _pool_configuration(len(condition_groups))
+
+        print(
+            f"Running {total_jobs} simulations using {worker_count} worker processes"
+            f" with {comsol_cores_per_task} CPU cores per COMSOL task"
+        )
+        if len(condition_groups) < total_jobs:
+            print(f"Bundled the conditions into {len(condition_groups)} ordered COMSOL sweep groups")
+
+        results_time = [[]] * total_jobs
+        results_dict = [{}] * total_jobs
+        start_total = timing.time()
+        failed_group_indices = []
+
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=_initialize_worker,
+            initargs=(comsol_cores_per_task,),
+        ) as executor:
+            futures = {
+                executor.submit(_run_standard_condition_group, group): [index for index, _ in group]
+                for group in condition_groups
+            }
+
+            completed = 0
+
+            for future in as_completed(futures):
+                group_indices = futures[future]
+
+                try:
+                    grouped_results = future.result()
+                    for index, time_vals, result_dict in grouped_results:
+                        results_time[index] = time_vals
+                        results_dict[index] = result_dict
+                        completed += 1
+                        elapsed = timing.time() - start_total
+                        print(
+                            f"[{completed}/{total_jobs}] "
+                            f"Condition {index} finished "
+                            f"(elapsed: {elapsed:.2f} s)"
+                        )
+                except Exception as exc:
+                    print(f"[ERROR] Condition group {group_indices} failed: {exc}")
+                    failed_group_indices.extend(group_indices)
+
+        if failed_group_indices:
+            for index in sorted(set(failed_group_indices)):
+                elapsed = timing.time() - start_total
+                print(
+                    f"Retrying condition {index} in GUI-order continuation mode "
+                    f"(elapsed: {elapsed:.2f} s)"
+                )
+                time_vals, result_dict = _run_standard_condition_with_gui_continuation(
+                    index,
+                    conditions,
+                    comsol_cores_per_task,
+                )
+                results_time[index] = time_vals
+                results_dict[index] = result_dict
+
+                completed = sum(1 for item in results_time if item)
+                elapsed = timing.time() - start_total
+                print(
+                    f"[{completed}/{total_jobs}] "
+                    f"Condition {index} finished via continuation replay "
+                    f"(elapsed: {elapsed:.2f} s)"
+                )
+
+        print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
+        return results_time, results_dict
+
+    if model_type == "COMSOL_thermal" and not comsol_parallel_standard_runs:
+        print(f"Running {total_jobs} simulations in one COMSOL parametric study")
+        start_total = timing.time()
+        try:
+            results_time, results_dict = fromcomsolRE.run_standard_models(conditions)
+        except Exception as exc:
+            print(f"[ERROR] Standard COMSOL study failed: {exc}")
+            raise
+
+        for index in range(total_jobs):
+            elapsed = timing.time() - start_total
+            print(
+                f"[{index + 1}/{total_jobs}] "
+                f"Condition {index} finished "
+                f"(elapsed: {elapsed:.2f} s)"
+            )
+
+        print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
+        return results_time, results_dict
+
+    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs)
+
+    print(
+        f"Running {total_jobs} simulations using {worker_count} worker processes"
+        + (f" with {comsol_cores_per_task} CPU cores per COMSOL task" if model_type == "COMSOL_thermal" else "")
+    )
+    if total_jobs > worker_count:
+        print(f"Scheduling {total_jobs - worker_count} simulations in the queue")
 
     results_time = [[]] * total_jobs
     results_dict = [{}] * total_jobs
 
     start_total = timing.time()
 
-    with ProcessPoolExecutor(max_workers=cpu_count) as executor:
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_initialize_worker,
+        initargs=(comsol_cores_per_task,),
+    ) as executor:
         # Keep track of which future belongs to which index
         futures = {
             executor.submit(_run_standard_single_condition, cond): i
@@ -240,12 +467,14 @@ def run_reduced_species_error_parallel(
         omitted_species_list,
         standard_data,
         comparator_mode):
-
-    cpu_count = multiprocessing.cpu_count()
     total_jobs = len(conditions) * len(omitted_species_list)
+    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs)
 
     print(f"Running {total_jobs} reduced-species simulations "
-          f"using {cpu_count} CPU cores")
+          f"using {worker_count} worker processes"
+          + (f" with {comsol_cores_per_task} CPU cores per COMSOL task" if model_type == "COMSOL_thermal" else ""))
+    if total_jobs > worker_count:
+        print(f"Scheduling {total_jobs - worker_count} reduced-species simulations in the queue")
 
     start_total = timing.time()
 
@@ -268,7 +497,11 @@ def run_reduced_species_error_parallel(
                 comparator_mode
             ))
 
-    with ProcessPoolExecutor(max_workers=cpu_count) as executor:
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_initialize_worker,
+        initargs=(comsol_cores_per_task,),
+    ) as executor:
 
         futures = [
             executor.submit(_reduced_species_error_worker, args)
@@ -311,12 +544,14 @@ def run_reduced_reactions_error_parallel(
         omitted_reactions_list,
         standard_data,
         comparator_mode):
-
-    cpu_count = min(8, multiprocessing.cpu_count())  # limit memory pressure
     total_jobs = len(conditions) * len(omitted_reactions_list)
+    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=8)
 
     print(f"Running {total_jobs} reduced-reaction simulations "
-          f"using {cpu_count} CPU cores")
+          f"using {worker_count} worker processes"
+          + (f" with {comsol_cores_per_task} CPU cores per COMSOL task" if model_type == "COMSOL_thermal" else ""))
+    if total_jobs > worker_count:
+        print(f"Scheduling {total_jobs - worker_count} reduced-reaction simulations in the queue")
 
     start_total = timing.time()
 
@@ -344,7 +579,11 @@ def run_reduced_reactions_error_parallel(
                 comparator_mode
             ))
 
-    with ProcessPoolExecutor(max_workers=cpu_count) as executor:
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_initialize_worker,
+        initargs=(comsol_cores_per_task,),
+    ) as executor:
 
         futures = [
             executor.submit(_reduced_reactions_error_worker, args)
@@ -466,7 +705,7 @@ if __name__ == "__main__":
             all_species = fromchemKIN.get_species()
             all_reactions = fromchemKIN.get_reactions()
         case "COMSOL_thermal":
-            fromcomsolRE.load_model_to_yaml(comsol_therm_model)
+            fromcomsolRE.load_comsol_model(comsol_therm_model)
             all_species = fromcomsolRE.get_species()
             all_reactions = fromcomsolRE.get_reactions()
         case "COMSOL_plasma":
@@ -502,7 +741,7 @@ if __name__ == "__main__":
     # Take conditions from folder :)
     conditions_list = condition_objects.TestConditions([])
 
-    for filename in os.listdir(input_folder):
+    for filename in sorted(os.listdir(input_folder)):
         condition_path = Path(input_folder) / filename
         new_condition = condition_objects.load_thermal_condition(str(condition_path))
         conditions_list.add_condition(new_condition)

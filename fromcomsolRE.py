@@ -36,11 +36,13 @@ import condition_objects as cond
 try:
     import mph
     from jpype import JArray, JString
+    from jpype.types import JInt
     MPH_AVAILABLE = True
 except ImportError:
     mph = None
     JArray = None
     JString = None
+    JInt = None
     MPH_AVAILABLE = False
 
 try:
@@ -76,7 +78,7 @@ UNIT_ENV = {
 }
 
 _MODULE_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_MODEL = _MODULE_ROOT / "chemistry" / "260309" / "0D_260309b.mph"
+_DEFAULT_MODEL = _MODULE_ROOT / "SkelKIN" / "0D_260312.mph"
 _model_file = _DEFAULT_MODEL
 _cached_model: "ComsolModel | None" = None
 _cached_client = None
@@ -91,11 +93,12 @@ _COMSOL_SWEEP_PATH = "studies/Parametric/All"
 _COMSOL_PHYSICS_PATH = "physics/Reaction Engineering"
 _COMSOL_EVALUATIONS_PATH = "evaluations"
 _COMSOL_CONCENTRATION_PLOT_PATH = "plots/Concentration (re)"
-_COMSOL_INITIAL_TIMESTEP = 1e-7
+_COMSOL_INITIAL_TIMESTEP = 1e-9
+_COMSOL_STEP_SMOOTHING = 1e-7
 _COMSOL_RETRY_MAXSTEP_FACTOR = 100.0
-_COMSOL_RETRY_MINSTEP = 1e-8
+_COMSOL_RETRY_MINSTEP = 1e-4
 _COMSOL_RETRY_MAXITER = 50
-_COMSOL_RETRY_PIVOT_PERTURB = 1e-6
+_COMSOL_RETRY_PIVOT_PERTURB = 1e-8
 
 
 def _unit_factor(unit_expression: str) -> float:
@@ -1104,16 +1107,14 @@ def _condition_step_parameters(condition: cond.ThermalCondition) -> tuple[float,
     location = times[0]
     start_temperature = temperatures[0]
     end_temperature = temperatures[-1]
-    smoothing_width = 1e-7
+    smoothing_width = _COMSOL_STEP_SMOOTHING
 
     for index in range(len(temperatures) - 1):
         if temperatures[index] != temperatures[index + 1]:
             start_time = float(times[index])
-            end_time = float(times[index + 1])
             location = start_time
             start_temperature = temperatures[index]
             end_temperature = temperatures[index + 1]
-            smoothing_width = max(end_time - start_time, 1e-12)
             break
 
     return float(location), float(start_temperature), float(end_temperature), float(smoothing_width)
@@ -1146,8 +1147,17 @@ def _configure_comsol_time_solver(model, conditions: list[cond.ThermalCondition]
     """Apply the minimum solver overrides required by the workflow."""
 
     solver = model / "solutions" / "Solution 1" / "Time-Dependent Solver 1"
+    fully_coupled = solver / "Fully Coupled 1"
+    direct = solver / "Direct"
+
     solver.property("initialstepbdfactive", True)
     solver.property("initialstepbdf", _COMSOL_INITIAL_TIMESTEP)
+    solver.property("maxstepbdf", 0.1)
+    solver.property("plot", "off")
+    fully_coupled.property("maxiter", _COMSOL_RETRY_MAXITER)
+    fully_coupled.property("minstep", _COMSOL_RETRY_MINSTEP)
+    fully_coupled.property("jtech", "onevery")
+    direct.property("pivotperturb", _COMSOL_RETRY_PIVOT_PERTURB)
 
 
 def _configure_comsol_parametric_study(model, conditions: list[cond.ThermalCondition]) -> None:
@@ -1159,10 +1169,6 @@ def _configure_comsol_parametric_study(model, conditions: list[cond.ThermalCondi
     tend_values = " ".join(str(params[2]) for params in step_parameters)
     slope_values = [float(params[3]) for params in step_parameters]
 
-    # In this COMSOL model, T_g is the initial gas temperature parameter.
-    # The time-dependent temperature itself is imposed through the RE lock
-    # re.T = T_var(t), so T_g must stay as the initial condition only.
-    model.parameter("T_g", "Tstart")
     if slope_values:
         model.parameter("slope", str(slope_values[0]))
 
@@ -1182,7 +1188,12 @@ def _configure_comsol_parametric_study(model, conditions: list[cond.ThermalCondi
 
 
 def _configure_comsol_result_plots(model) -> None:
-    """Ensure COMSOL plots use physical time on the x-axis."""
+    """Disable automatic COMSOL plotting and keep plot definitions consistent."""
+
+    try:
+        (model / "plots").java.setOnlyPlotWhenRequested(True)
+    except Exception:
+        pass
 
     try:
         plot_group = model / _COMSOL_CONCENTRATION_PLOT_PATH
@@ -1190,6 +1201,13 @@ def _configure_comsol_result_plots(model) -> None:
     except Exception:
         return
 
+    try:
+        plot_group.java.active(False)
+    except Exception:
+        pass
+
+    plot_group.property("progressactive", False)
+    plot_group.property("showlegends", "off")
     global_plot.property("xdata", "expr")
     global_plot.property("xdataexpr", "t")
     global_plot.property("xdatadescractive", True)
@@ -1260,6 +1278,22 @@ def _get_comsol_dataset(model):
     return model / "datasets" / _COMSOL_DATASET_NAME
 
 
+def _dataset_has_solution(model, dataset) -> bool:
+    """Return whether the dataset already points to a computed solution."""
+
+    if "solution" in dataset.properties():
+        tag = dataset.property("solution")
+    elif "data" in dataset.properties():
+        tag = dataset.property("data")
+    else:
+        return False
+
+    for solution in model / "solutions":
+        if solution.tag() == tag:
+            return not solution.java.isEmpty()
+    return False
+
+
 def _evaluate_comsol_globals(
     model,
     expressions: list[str],
@@ -1279,7 +1313,10 @@ def _evaluate_comsol_globals(
     try:
         evaluation.property("expr", expressions)
         evaluation.property("data", dataset)
-        evaluation.property("outersolnum", outer_index)
+        if JArray is not None and JInt is not None:
+            evaluation.java.set("outersolnum", JArray(JInt)([int(outer_index)]))
+        else:
+            evaluation.property("outersolnum", [int(outer_index)])
 
         java = evaluation.java
         results = np.asarray(java.computeResult(), dtype=float)
@@ -1302,14 +1339,12 @@ def _evaluate_comsol_solution(
     """Read one outer parametric solution and convert concentrations to mole fractions."""
 
     dataset = _get_comsol_dataset(model)
-    time_values = list(model.inner(dataset=dataset)[1])
     expressions = [f"re.c_{species.name}" for species in mechanism.species]
-    concentration_arrays = _evaluate_comsol_globals(
-        model,
-        expressions,
-        dataset=dataset,
-        outer_index=outer_index,
-    )
+    time_values = np.asarray(model.evaluate("t", dataset=dataset, outer=outer_index), dtype=float)
+    concentration_arrays = np.asarray(model.evaluate(expressions, dataset=dataset, outer=outer_index), dtype=float)
+    if concentration_arrays.ndim == 1:
+        concentration_arrays = concentration_arrays[:, np.newaxis]
+    concentration_arrays = concentration_arrays.T
     total_concentration = np.sum(concentration_arrays, axis=0)
     total_concentration[total_concentration <= 0.0] = 1.0
     mole_fractions = concentration_arrays / total_concentration
@@ -1318,7 +1353,191 @@ def _evaluate_comsol_solution(
         species.name: list(mole_fractions[index, :])
         for index, species in enumerate(mechanism.species)
     }
-    return time_values, result_dict
+    return list(time_values), result_dict
+
+
+def _evaluate_current_comsol_solution(
+    model,
+    mechanism: MechanismView,
+) -> tuple[list[float], dict[str, list[float]]]:
+    """Read the currently selected COMSOL solution without outer selection."""
+
+    dataset = _get_comsol_dataset(model)
+    expressions = [f"re.c_{species.name}" for species in mechanism.species]
+    time_values = np.asarray(model.evaluate("t", dataset=dataset), dtype=float)
+    concentration_arrays = np.asarray(model.evaluate(expressions, dataset=dataset), dtype=float)
+    if concentration_arrays.ndim == 1:
+        concentration_arrays = concentration_arrays[:, np.newaxis]
+    concentration_arrays = concentration_arrays.T
+    total_concentration = np.sum(concentration_arrays, axis=0)
+    total_concentration[total_concentration <= 0.0] = 1.0
+    mole_fractions = concentration_arrays / total_concentration
+
+    result_dict = {
+        species.name: list(mole_fractions[index, :])
+        for index, species in enumerate(mechanism.species)
+    }
+    return list(time_values), result_dict
+
+
+def _condition_signature(condition: cond.ThermalCondition) -> tuple[float, float, float]:
+    """Return the embedded-study signature for one standard COMSOL condition."""
+
+    _, start_temperature, end_temperature, _ = _condition_step_parameters(condition)
+    return (_condition_xch4(condition), float(start_temperature), float(end_temperature))
+
+
+def _parse_study_values(value: str) -> list[float]:
+    """Parse one COMSOL parametric list into floats."""
+
+    return [float(item) for item in str(value).split()]
+
+
+def _saved_study_signatures(model) -> list[tuple[float, float, float]]:
+    """Read the saved COMSOL standard sweep from the model."""
+
+    study = (model / _COMSOL_SWEEP_PATH).java
+    parameter_names = list(study.getStringArray("pname"))
+    parameter_lists = {
+        name: _parse_study_values(value)
+        for name, value in zip(parameter_names, list(study.getStringArray("plistarr")))
+    }
+    if not {"xCH4", "Tstart", "Tend"}.issubset(parameter_lists):
+        raise RuntimeError("Embedded COMSOL study is missing xCH4/Tstart/Tend.")
+    return list(zip(parameter_lists["xCH4"], parameter_lists["Tstart"], parameter_lists["Tend"]))
+
+
+def _can_use_embedded_standard_study(model, conditions: list[cond.ThermalCondition]) -> bool:
+    """Return whether the requested conditions are covered by the embedded study."""
+
+    saved = set(_saved_study_signatures(model))
+    return all(_condition_signature(condition) in saved for condition in conditions)
+
+
+def _open_fresh_comsol_model():
+    """Open a fresh COMSOL session/model pair for untouched-study execution."""
+
+    if not MPH_AVAILABLE:
+        raise RuntimeError("The mph library is required for COMSOL-backed solves.")
+
+    client = mph.start(cores=_comsol_cores)
+    model = client.load(str(_model_file))
+    return client, model
+
+
+def run_embedded_standard_models(conditions: list[cond.ThermalCondition]):
+    """Run the saved COMSOL study unchanged and extract the requested subset."""
+
+    mechanism = _get_model().reduced()
+    client, model = _open_fresh_comsol_model()
+    try:
+        if not _can_use_embedded_standard_study(model, conditions):
+            raise RuntimeError("Requested conditions are not covered by the embedded COMSOL study.")
+
+        signature_to_outer = {
+            signature: outer_index
+            for outer_index, signature in enumerate(_saved_study_signatures(model), start=1)
+        }
+    finally:
+        try:
+            client.remove(model)
+        except Exception:
+            pass
+
+    requested = []
+    for condition in conditions:
+        signature = _condition_signature(condition)
+        outer_index = signature_to_outer[signature]
+        outer_client, outer_model = _open_fresh_comsol_model()
+        try:
+            _configure_comsol_result_plots(outer_model)
+            dataset = _get_comsol_dataset(outer_model)
+            if not _dataset_has_solution(outer_model, dataset):
+                outer_model.solve(_COMSOL_STUDY_NAME)
+            requested.append(_evaluate_comsol_solution(outer_model, mechanism, outer_index))
+        finally:
+            try:
+                outer_client.remove(outer_model)
+            except Exception:
+                pass
+
+    time_values = [times for times, _ in requested]
+    result_dicts = [result_dict for _, result_dict in requested]
+    return time_values, result_dicts
+
+
+def _run_mechanism_model_with_history(
+    conditions: list[cond.ThermalCondition],
+    mechanism: MechanismView,
+) -> tuple[list[float], dict[str, list[float]]]:
+    """Run a GUI-order continuation prefix and return only the final condition."""
+
+    client, model = _open_fresh_comsol_model()
+    try:
+        _apply_mechanism_to_comsol(mechanism)
+        _configure_comsol_temperature_function(model, conditions)
+        _configure_comsol_time_solver(model, conditions)
+        _configure_comsol_parametric_study(model, conditions)
+        _configure_comsol_result_plots(model)
+        model.solve(_COMSOL_STUDY_NAME)
+        return _evaluate_current_comsol_solution(model, mechanism)
+    except Exception as exc:
+        problem_messages = _collect_comsol_problem_messages(model)
+        detail = f"{type(exc).__name__}: {exc}"
+        if problem_messages:
+            detail = detail + " | COMSOL problems: " + " || ".join(problem_messages)
+        raise RuntimeError(f"COMSOL continuation solve failed: {detail}") from None
+    finally:
+        try:
+            client.remove(model)
+        except Exception:
+            pass
+
+
+def run_standard_model_with_history(conditions: list[cond.ThermalCondition]):
+    """Run a GUI-order continuation prefix for the full mechanism."""
+
+    mechanism = _get_model().reduced()
+    return _run_mechanism_model_with_history(conditions, mechanism)
+
+
+def _standard_condition_order(conditions: list[cond.ThermalCondition]) -> list[tuple[int, cond.ThermalCondition]]:
+    """Return the COMSOL GUI sweep order for the supplied conditions."""
+
+    return sorted(
+        list(enumerate(conditions)),
+        key=lambda item: (
+            0 if item[1].get_temperature()[1][0] < item[1].get_temperature()[1][-1] else 1,
+            _condition_xch4(item[1]),
+            item[0],
+        ),
+    )
+
+
+def _run_mechanism_models_via_continuation(
+    conditions: list[cond.ThermalCondition],
+    mechanism: MechanismView,
+) -> tuple[list[list[float]], list[dict[str, list[float]]]]:
+    """Run all conditions by replaying the COMSOL continuation order."""
+
+    ordered_conditions = _standard_condition_order(conditions)
+    time_values = [[]] * len(conditions)
+    result_dicts = [{}] * len(conditions)
+
+    for position, (original_index, _) in enumerate(ordered_conditions, start=1):
+        replay_conditions = [condition for _, condition in ordered_conditions[:position]]
+        time_vals, result_dict = _run_mechanism_model_with_history(replay_conditions, mechanism)
+        time_values[original_index] = time_vals
+        result_dicts[original_index] = result_dict
+
+    return time_values, result_dicts
+
+
+def run_standard_models_via_continuation(conditions: list[cond.ThermalCondition]):
+    """Run all standard conditions by replaying the COMSOL continuation order."""
+
+    mechanism = _get_model().reduced()
+    return _run_mechanism_models_via_continuation(conditions, mechanism)
 
 
 def _run_comsol_mechanism(
@@ -1376,6 +1595,9 @@ def _run_comsol_mechanism(
 def run_standard_models(conditions: list[cond.ThermalCondition]):
     """Run the full COMSOL mechanism for all supplied conditions in one sweep."""
 
+    if len(conditions) > 1:
+        return run_standard_models_via_continuation(conditions)
+
     mechanism = _get_model().reduced()
     return _run_comsol_mechanism(conditions, mechanism)
 
@@ -1384,6 +1606,8 @@ def run_reduced_species_models(conditions: list[cond.ThermalCondition], omitted_
     """Run a species-reduced COMSOL sweep for all supplied conditions."""
 
     mechanism = _get_model().reduced(omitted_species=omitted_species)
+    if len(conditions) > 1:
+        return _run_mechanism_models_via_continuation(conditions, mechanism)
     return _run_comsol_mechanism(conditions, mechanism)
 
 
@@ -1395,6 +1619,8 @@ def run_reduced_reactions_models(
     """Run a COMSOL sweep reduced by both species and explicit reactions."""
 
     mechanism = _get_model().reduced(omitted_species=omitted_species, omitted_reactions=omitted_reactions)
+    if len(conditions) > 1:
+        return _run_mechanism_models_via_continuation(conditions, mechanism)
     return _run_comsol_mechanism(conditions, mechanism)
 
 

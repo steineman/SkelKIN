@@ -108,6 +108,9 @@ class ItemError:
     def get_value(self) -> float:
         return self.value
 
+    def get_max_value(self) -> float:
+        return self.max_value
+
     def set_item(self, item: str | tuple[str]):
         self.item = item
 

@@ -3,6 +3,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 from pathlib import Path
+import queue
 
 import fromchemKIN
 import fromcomsolRE
@@ -23,6 +24,10 @@ excluded_species = ['CH4', 'CO2','H','H2','CO','H2O','CH3','CH2','O2','O']
 model_type = "COMSOL_thermal"
 comparator_type = "max" # "lin", "log", "max"
 comsol_parallel_standard_runs = True
+COMSOL_REDUCTION_WORKER_CAP = 5
+COMSOL_MAX_CORES_PER_TASK = 8
+COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS = 7200
+TIMEOUT_ERROR_VALUE = float("1.0")
 
 # Optional files, depending on model choice
 chemkin_kinet = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_pyro_COMSOL.CKI.txt")
@@ -38,6 +43,7 @@ def _initialize_worker(comsol_cores_per_task: int = 1):
         case "ChemKIN":
             fromchemKIN.load_model_to_yaml(chemkin_kinet, chemkin_thermo)
         case "COMSOL_thermal":
+            fromcomsolRE.set_comsol_session_mode("client-server")
             fromcomsolRE.set_comsol_cores(comsol_cores_per_task)
             fromcomsolRE.load_comsol_model(comsol_therm_model)
         case "COMSOL_plasma":
@@ -67,14 +73,24 @@ def _pool_configuration(total_jobs: int, *, default_cap: int | None = None) -> t
     comsol_cores_per_task = 1
 
     if model_type == "COMSOL_thermal":
-        comsol_cores_per_task = max(1, available_cpus // worker_count)
+        raw_cores_per_task = min(COMSOL_MAX_CORES_PER_TASK, max(1, available_cpus // worker_count))
+        if raw_cores_per_task > 1 and raw_cores_per_task % 2 == 1:
+            raw_cores_per_task -= 1
+        comsol_cores_per_task = max(1, raw_cores_per_task)
 
     return worker_count, comsol_cores_per_task
 # Code start, good luck
 def check_project_similarity():
     # check if it's the same project
-    (file_model_type, file_comparator_type, file_sensitivity, file_excluded_species, file_test_conditions_folder,
-     file_len_original_species_list, file_len_original_reactions_list) = project_handler.get_header_data()
+    (
+        file_model_type,
+        file_comparator_type,
+        file_sensitivity,
+        file_excluded_species,
+        file_test_conditions_folder,
+        file_len_original_species_list,
+        file_len_original_reactions_list,
+    ) = project_handler.get_header_data()
     if file_model_type != model_type or file_comparator_type != comparator_type or file_sensitivity != sensitivity_tolerance or file_excluded_species != excluded_species or file_len_original_species_list != len(
             all_species) or file_len_original_reactions_list != len(
             all_reactions) or file_test_conditions_folder != input_folder:
@@ -104,77 +120,14 @@ def _run_standard_single_condition(condition):
         raise RuntimeError(str(exc)) from None
 
 
-def _run_standard_condition_group(group):
-    """Run one ordered group of COMSOL conditions inside a single worker."""
+def _worker_identifier() -> int:
+    """Return a stable worker number for progress reporting."""
 
-    indexed_conditions = list(group)
-    ordered_conditions = [condition for _, condition in indexed_conditions]
+    identity = multiprocessing.current_process()._identity
+    if identity:
+        return int(identity[0])
+    return 0
 
-    try:
-        match model_type:
-            case "COMSOL_thermal":
-                time_vals_list, result_dicts = fromcomsolRE.run_standard_models(ordered_conditions)
-                return [
-                    (index, time_vals, result_dict)
-                    for (index, _), time_vals, result_dict in zip(indexed_conditions, time_vals_list, result_dicts)
-                ]
-            case _:
-                raise ValueError("Grouped standard runs are only used for COMSOL thermal models.")
-    except Exception as exc:
-        raise RuntimeError(str(exc)) from None
-
-
-def _group_comsol_standard_conditions(conditions):
-    """Group COMSOL standard conditions to preserve useful continuation paths."""
-
-    groups: dict[float, list[tuple[int, object]]] = {}
-
-    for index, condition in enumerate(conditions):
-        key = float(condition.get_molar_fraction("CH4") or 0.0)
-        groups.setdefault(key, []).append((index, condition))
-
-    ordered_groups = []
-    for key in sorted(groups):
-        ordered_groups.append(
-            sorted(
-                groups[key],
-                key=lambda item: (
-                    item[1].get_temperature()[1][0],
-                    item[1].get_temperature()[1][-1],
-                    item[0],
-                ),
-            )
-        )
-
-    return ordered_groups
-
-
-def _ordered_comsol_study_conditions(conditions):
-    """Return the conditions in the original COMSOL study order."""
-
-    return sorted(
-        list(enumerate(conditions)),
-        key=lambda item: (
-            0 if item[1].get_temperature()[1][0] < item[1].get_temperature()[1][-1] else 1,
-            float(item[1].get_molar_fraction("CH4") or 0.0),
-            item[0],
-        ),
-    )
-
-
-def _run_standard_condition_with_gui_continuation(target_index, conditions, comsol_cores_per_task: int):
-    """Replay the saved COMSOL sweep order up to one target condition."""
-
-    ordered_conditions = _ordered_comsol_study_conditions(conditions)
-    target_position = next(
-        position
-        for position, (index, _) in enumerate(ordered_conditions)
-        if index == target_index
-    )
-    replay_conditions = [condition for _, condition in ordered_conditions[:target_position + 1]]
-
-    fromcomsolRE.set_comsol_cores(comsol_cores_per_task)
-    return fromcomsolRE.run_standard_model_with_history(replay_conditions)
 
 
 def _reduced_species_error_worker(args):
@@ -188,6 +141,8 @@ def _reduced_species_error_worker(args):
      standard_time,
      standard_dict,
      comparator_mode) = args
+    worker_id = _worker_identifier()
+    start_worker = timing.perf_counter()
 
     # Run reduced simulation
     try:
@@ -234,7 +189,7 @@ def _reduced_species_error_worker(args):
             raise ValueError(f"Unknown comparator mode: {comparator_mode}")
 
     # Drop big arrays automatically when function exits
-    return omitted_species, cond_index, error_value
+    return omitted_species, cond_index, error_value, worker_id, timing.perf_counter() - start_worker
 
 
 def _compare_error_value(standard_time, standard_dict, time_vals, result_dict, comparator_mode):
@@ -251,22 +206,58 @@ def _compare_error_value(standard_time, standard_dict, time_vals, result_dict, c
             raise ValueError(f"Unknown comparator mode: {comparator_mode}")
 
 
-def _reduced_species_error_worker_all_conditions(args):
-    """Run one reduced-species COMSOL mechanism over the full condition set."""
+def _item_key(item):
+    """Normalize a progress item so completed work can be matched on resume."""
 
-    conditions, omitted_species, standard_times, standard_dicts, comparator_mode = args
+    if isinstance(item, list):
+        return tuple(item)
+    return item
+
+
+def _timeout_comment(timeout_seconds: float) -> str:
+    """Return the `.skn` timeout annotation for one stalled simulation."""
+
+    return f"TIMEOUT SPECIES : {int(timeout_seconds)} s"
+
+
+def _failed_species_comment(reason: str) -> str:
+    """Return the `.skn` annotation for one non-convergent reduced-species case."""
+
+    del reason
+    return "Failed Species"
+
+
+def _is_nonremovable_species_error(item_error: condition_objects.ItemError) -> bool:
+    """Return whether a step-1 species result should be kept out of step 2."""
+
+    comment = getattr(item_error, "comment", "") or ""
+    return (
+        comment.startswith("TIMEOUT SPECIES")
+        or comment.startswith("FAILED SPECIES")
+        or comment.startswith("Failed Species")
+    )
+
+
+def _reduced_species_error_worker_all_conditions_inner(
+    result_queue,
+    conditions,
+    omitted_species,
+    standard_times,
+    standard_dicts,
+    comparator_mode,
+    comsol_cores_per_task,
+):
+    """Run one COMSOL reduced-species candidate in an isolated child process."""
 
     try:
-        match model_type:
-            case "COMSOL_thermal":
-                time_vals_list, result_dicts = fromcomsolRE.run_reduced_species_models(
-                    conditions,
-                    [omitted_species] if isinstance(omitted_species, str) else omitted_species,
-                )
-            case _:
-                raise ValueError("Grouped reduced-species runs are only used for COMSOL thermal models.")
+        _initialize_worker(comsol_cores_per_task)
+        time_vals_list, result_dicts = fromcomsolRE.run_reduced_species_models(
+            conditions,
+            [omitted_species] if isinstance(omitted_species, str) else omitted_species,
+        )
     except Exception as exc:
-        raise RuntimeError(str(exc)) from None
+        result_queue.put(("error", str(exc)))
+        return
 
     item_error = condition_objects.ItemError(
         tuple(omitted_species) if isinstance(omitted_species, list) else omitted_species,
@@ -289,7 +280,102 @@ def _reduced_species_error_worker_all_conditions(args):
         )
         item_error.add_to_value(error_value)
 
-    return item_error.get_item(), item_error.get_value(), item_error.get_max_value(), item_error.weight
+    result_queue.put(
+        (
+            "ok",
+            item_error.get_item(),
+            item_error.get_value(),
+            item_error.get_max_value(),
+            item_error.weight,
+            item_error.get_comment(),
+        )
+    )
+
+
+def _reduced_species_error_worker_all_conditions(args):
+    """Run one reduced-species COMSOL mechanism over the full condition set."""
+
+    (
+        conditions,
+        omitted_species,
+        standard_times,
+        standard_dicts,
+        comparator_mode,
+        comsol_cores_per_task,
+        timeout_seconds,
+    ) = args
+    worker_id = _worker_identifier()
+    start_worker = timing.perf_counter()
+
+    match model_type:
+        case "COMSOL_thermal":
+            ctx = multiprocessing.get_context("spawn")
+            result_queue = ctx.Queue()
+            child = ctx.Process(
+                target=_reduced_species_error_worker_all_conditions_inner,
+                args=(
+                    result_queue,
+                    conditions,
+                    omitted_species,
+                    standard_times,
+                    standard_dicts,
+                    comparator_mode,
+                    comsol_cores_per_task,
+                ),
+            )
+            child.start()
+            child.join(timeout_seconds)
+
+            if child.is_alive():
+                child.terminate()
+                child.join(10)
+                if child.is_alive():
+                    child.kill()
+                    child.join(5)
+
+                timeout_item = tuple(omitted_species) if isinstance(omitted_species, list) else omitted_species
+                return (
+                    timeout_item,
+                    TIMEOUT_ERROR_VALUE,
+                    TIMEOUT_ERROR_VALUE,
+                    float(len(conditions)),
+                    worker_id,
+                    timing.perf_counter() - start_worker,
+                    True,
+                    _timeout_comment(timeout_seconds),
+                )
+
+            try:
+                status, *payload = result_queue.get_nowait()
+            except queue.Empty:
+                raise RuntimeError("Reduced-species worker exited without returning a result.") from None
+
+            if status == "error":
+                failed_item = tuple(omitted_species) if isinstance(omitted_species, list) else omitted_species
+                return (
+                    failed_item,
+                    TIMEOUT_ERROR_VALUE,
+                    TIMEOUT_ERROR_VALUE,
+                    float(len(conditions)),
+                    worker_id,
+                    timing.perf_counter() - start_worker,
+                    False,
+                    _failed_species_comment(payload[0]),
+                )
+
+            species, mean_error, max_error, weight, comment = payload
+            return (
+                species,
+                mean_error,
+                max_error,
+                weight,
+                worker_id,
+                timing.perf_counter() - start_worker,
+                False,
+                comment,
+            )
+        case _:
+            raise ValueError("Grouped reduced-species runs are only used for COMSOL thermal models.")
 
 
 def _reduced_reactions_error_worker(args):
@@ -355,7 +441,7 @@ def _reduced_reactions_error_worker(args):
                 result_dict
             )
         case _:
-            raise ValueError(f"Unknown comparator mode: {comparator_mode}")
+            raise ValueError(f"Unknown comparator mode: {comparator_mode}.")
 
     # Big arrays die here when function exits
     return omitted_reactions, cond_index, error_value
@@ -420,87 +506,8 @@ def run_standard_models_parallel(conditions):
 
     total_jobs = len(conditions)
 
-    if model_type == "COMSOL_thermal" and comsol_parallel_standard_runs:
-        stepup_indices = [
-            index for index, condition in enumerate(conditions)
-            if condition.get_temperature()[1][0] < condition.get_temperature()[1][-1]
-        ]
-        stepdown_indices = [
-            index for index, condition in _ordered_comsol_study_conditions(conditions)
-            if condition.get_temperature()[1][0] > condition.get_temperature()[1][-1]
-        ]
-        parallel_jobs = max(1, len(stepup_indices))
-        worker_count, comsol_cores_per_task = _pool_configuration(parallel_jobs)
-
-        print(
-            f"Running {total_jobs} simulations using {worker_count} worker processes"
-            f" with {comsol_cores_per_task} CPU cores per COMSOL task"
-        )
-        if stepup_indices and stepdown_indices:
-            print(
-                f"Parallelizing {len(stepup_indices)} stepup cases and replaying "
-                f"{len(stepdown_indices)} stepdown cases in COMSOL continuation order"
-            )
-
-        results_time = [[]] * total_jobs
-        results_dict = [{}] * total_jobs
-        start_total = timing.time()
-        completed = 0
-
-        if stepup_indices:
-            with ProcessPoolExecutor(
-                max_workers=worker_count,
-                initializer=_initialize_worker,
-                initargs=(comsol_cores_per_task,),
-            ) as executor:
-                futures = {
-                    executor.submit(_run_standard_single_condition, conditions[index]): index
-                    for index in stepup_indices
-                }
-
-                for future in as_completed(futures):
-                    index = futures[future]
-                    try:
-                        time_vals, result_dict = future.result()
-                        results_time[index] = time_vals
-                        results_dict[index] = result_dict
-                        completed += 1
-                        elapsed = timing.time() - start_total
-                        print(
-                            f"[{completed}/{total_jobs}] "
-                            f"Condition {index} finished "
-                            f"(elapsed: {elapsed:.2f} s)"
-                        )
-                    except Exception as exc:
-                        print(f"[ERROR] Stepup condition {index} failed: {exc}")
-                        raise
-
-        for index in stepdown_indices:
-            elapsed = timing.time() - start_total
-            print(
-                f"Replaying stepdown condition {index} in GUI-order continuation mode "
-                f"(elapsed: {elapsed:.2f} s)"
-            )
-            time_vals, result_dict = _run_standard_condition_with_gui_continuation(
-                index,
-                conditions,
-                comsol_cores_per_task,
-            )
-            results_time[index] = time_vals
-            results_dict[index] = result_dict
-            completed += 1
-            elapsed = timing.time() - start_total
-            print(
-                f"[{completed}/{total_jobs}] "
-                f"Condition {index} finished via continuation replay "
-                f"(elapsed: {elapsed:.2f} s)"
-            )
-
-        print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
-        return results_time, results_dict
-
     if model_type == "COMSOL_thermal" and not comsol_parallel_standard_runs:
-        print(f"Running {total_jobs} simulations in one COMSOL parametric study")
+        print(f"Running {total_jobs} simulations sequentially in one COMSOL worker session")
         start_total = timing.time()
         try:
             results_time, results_dict = fromcomsolRE.run_standard_models(conditions)
@@ -575,16 +582,39 @@ def run_reduced_species_error_parallel(
         conditions,
         omitted_species_list,
         standard_data,
-        comparator_mode):
+        comparator_mode,
+        checkpoint_step_number: int | None = None,
+        existing_error_list: condition_objects.ItemErrorList | None = None):
     if model_type == "COMSOL_thermal":
         total_jobs = len(omitted_species_list)
-        worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=6)
+        completed_error_list = condition_objects.ItemErrorList([])
+        allowed_keys = {_item_key(species) for species in omitted_species_list}
+        if existing_error_list is not None:
+            completed_error_list.items = [
+                item
+                for item in existing_error_list.items
+                if _item_key(item.item) in allowed_keys
+            ]
+        completed_keys = {_item_key(item.item) for item in completed_error_list.items}
+        pending_species = [species for species in omitted_species_list if _item_key(species) not in completed_keys]
+        pending_jobs = len(pending_species)
 
-        print(f"Running {total_jobs} reduced-species simulations "
+        if pending_jobs == 0:
+            completed_error_list.sort_items()
+            return completed_error_list
+
+        worker_count, comsol_cores_per_task = _pool_configuration(
+            pending_jobs,
+            default_cap=COMSOL_REDUCTION_WORKER_CAP,
+        )
+
+        print(f"Running {pending_jobs} reduced-species simulations "
               f"using {worker_count} worker processes"
               f" with {comsol_cores_per_task} CPU cores per COMSOL task")
-        if total_jobs > worker_count:
-            print(f"Scheduling {total_jobs - worker_count} reduced-species simulations in the queue")
+        if pending_jobs > worker_count:
+            print(f"Scheduling {pending_jobs - worker_count} reduced-species simulations in the queue")
+        if completed_error_list.items:
+            print(f"Resuming with {len(completed_error_list.items)} completed and {pending_jobs} remaining")
 
         start_total = timing.time()
         job_args = [
@@ -594,39 +624,47 @@ def run_reduced_species_error_parallel(
                 standard_data[0],
                 standard_data[1],
                 comparator_mode,
+                comsol_cores_per_task,
+                COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS,
             )
-            for species in omitted_species_list
+            for species in pending_species
         ]
 
-        errorList = condition_objects.ItemErrorList([])
+        errorList = completed_error_list
 
-        with ProcessPoolExecutor(
-            max_workers=worker_count,
-            initializer=_initialize_worker,
-            initargs=(comsol_cores_per_task,),
-        ) as executor:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
             futures = [
                 executor.submit(_reduced_species_error_worker_all_conditions, args)
                 for args in job_args
             ]
 
-            completed = 0
+            completed = len(errorList.items)
 
             for future in as_completed(futures):
-                species, mean_error, max_error, weight = future.result()
-                item_error = condition_objects.ItemError(species, mean_error, max_error, weight)
+                species, mean_error, max_error, weight, worker_id, worker_elapsed, timed_out, comment = future.result()
+                item_error = condition_objects.ItemError(species, mean_error, max_error, weight, comment=comment)
                 errorList.add_to_list(item_error)
+                if checkpoint_step_number is not None:
+                    errorList.sort_items()
+                    project_handler.write_step_progress(checkpoint_step_number, errorList)
 
                 completed += 1
                 elapsed = timing.time() - start_total
 
+                if timed_out:
+                    print(f"Timeout on simulation without {species}. Cannot afford to remove it")
+                elif comment.startswith("FAILED SPECIES") or comment.startswith("Failed Species"):
+                    print(f"Solver failure on simulation without {species}. Cannot afford to remove it")
+
                 print(
                     f"[{completed}/{total_jobs}] "
-                    f"{species} finished "
-                    f"(elapsed: {elapsed:.2f} s)"
+                    f"{species} finished by worker {worker_id} in {worker_elapsed:.2f} s. "
+                    f"(Total time elapsed: {elapsed:.2f} s)"
                 )
 
         errorList.sort_items()
+        if checkpoint_step_number is not None:
+            project_handler.clear_step_progress(checkpoint_step_number)
         print(f"All reduced-species simulations finished in "
               f"{timing.time() - start_total:.2f} seconds")
         return errorList
@@ -647,10 +685,24 @@ def run_reduced_species_error_parallel(
         tuple(s) if isinstance(s, list) else s: condition_objects.ItemError(tuple(s) if isinstance(s, list) else s, 0, 0 ,0)
         for s in omitted_species_list
     }
+    if existing_error_list is not None:
+        for item in existing_error_list.items:
+            if _item_key(item.item) not in species_errors:
+                continue
+            species_errors[_item_key(item.item)] = condition_objects.ItemError(
+                item.item,
+                item.value,
+                item.max_value,
+                item.weight,
+                comment=getattr(item, "comment", ""),
+            )
 
     job_args = []
+    existing_keys = {_item_key(item.item) for item in (existing_error_list.items if existing_error_list is not None else [])}
 
     for species in omitted_species_list:
+        if _item_key(species) in existing_keys:
+            continue
         for cond_index, condition in enumerate(conditions):
             job_args.append((
                 cond_index,
@@ -672,30 +724,39 @@ def run_reduced_species_error_parallel(
             for args in job_args
         ]
 
-        completed = 0
+        completed = int(sum(item.weight for item in species_errors.values() if item.weight > 0))
 
         for future in as_completed(futures):
-            species, cond_index, error_value = future.result()
+            species, cond_index, error_value, worker_id, worker_elapsed = future.result()
 
             key = tuple(species) if isinstance(species, list) else species
             species_errors[key].add_to_value(error_value)
+            if checkpoint_step_number is not None:
+                checkpoint_errors = condition_objects.ItemErrorList([
+                    item for item in species_errors.values() if item.weight > 0
+                ])
+                checkpoint_errors.sort_items()
+                project_handler.write_step_progress(checkpoint_step_number, checkpoint_errors)
 
             completed += 1
             elapsed = timing.time() - start_total
 
             print(
                 f"[{completed}/{total_jobs}] "
-                f"{species}, Condition {cond_index} finished "
-                f"(elapsed: {elapsed:.2f} s)"
+                f"{species}, Condition {cond_index} finished by worker {worker_id} in {worker_elapsed:.2f} s. "
+                f"(Total time elapsed: {elapsed:.2f} s)"
             )
 
     # Build ItemErrorList
     errorList = condition_objects.ItemErrorList([])
 
     for species in species_errors:
-        errorList.add_to_list(species_errors[species])
+        if species_errors[species].weight > 0:
+            errorList.add_to_list(species_errors[species])
 
     errorList.sort_items()
+    if checkpoint_step_number is not None:
+        project_handler.clear_step_progress(checkpoint_step_number)
 
     print(f"All reduced-species simulations finished in "
           f"{timing.time() - start_total:.2f} seconds")
@@ -710,7 +771,7 @@ def run_reduced_reactions_error_parallel(
         comparator_mode):
     if model_type == "COMSOL_thermal":
         total_jobs = len(omitted_reactions_list)
-        worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=6)
+        worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=COMSOL_REDUCTION_WORKER_CAP)
 
         print(f"Running {total_jobs} reduced-reaction simulations "
               f"using {worker_count} worker processes"
@@ -765,7 +826,7 @@ def run_reduced_reactions_error_parallel(
         return errorList
 
     total_jobs = len(conditions) * len(omitted_reactions_list)
-    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=8)
+    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=COMSOL_REDUCTION_WORKER_CAP)
 
     print(f"Running {total_jobs} reduced-reaction simulations "
           f"using {worker_count} worker processes"
@@ -896,13 +957,78 @@ def inverse_item_pyramid_builder(item_error_list : condition_objects.ItemErrorLi
     inverse_pyramid = []
 
     too_much_voodoo = []
+    removable_items = [
+        item
+        for item in item_error_list.items
+        if not _is_nonremovable_species_error(item)
+    ]
 
     # I am not documenting this, figure it out, good luck
-    for item in item_error_list.items[::-1]:
+    for item in removable_items[::-1]:
         too_much_voodoo.append(item.item)
         inverse_pyramid.append(too_much_voodoo.copy())
 
     return inverse_pyramid
+
+
+def _species_group_from_item(item: str | list[str] | tuple[str, ...]) -> list[str]:
+    """Normalize one step-2 item into a plain species list."""
+
+    if isinstance(item, str):
+        return [item]
+    return list(item)
+
+
+def _select_step2_omitted_species(
+    grouped_species_error: condition_objects.ItemErrorList,
+    tolerance: float,
+) -> list[str]:
+    """Choose the largest removable step-2 species group within tolerance."""
+
+    best_group: list[str] = []
+    best_error = float("inf")
+    best_max_error = float("inf")
+
+    for item_error in grouped_species_error.items:
+        if item_error.get_value() > tolerance:
+            continue
+
+        species_group = _species_group_from_item(item_error.get_item())
+        if len(species_group) > len(best_group):
+            best_group = species_group
+            best_error = item_error.get_value()
+            best_max_error = item_error.get_max_value()
+            continue
+
+        if len(species_group) == len(best_group):
+            if item_error.get_value() < best_error:
+                best_group = species_group
+                best_error = item_error.get_value()
+                best_max_error = item_error.get_max_value()
+            elif item_error.get_value() == best_error and item_error.get_max_value() < best_max_error:
+                best_group = species_group
+                best_error = item_error.get_value()
+                best_max_error = item_error.get_max_value()
+
+    return best_group
+
+
+def _export_step2_comsol_copy(grouped_species_error: condition_objects.ItemErrorList) -> None:
+    """Export the step-2 reduced COMSOL model copy for the current project."""
+
+    if model_type != "COMSOL_thermal":
+        return
+    if not isinstance(grouped_species_error, condition_objects.ItemErrorList):
+        return
+    if not grouped_species_error.items:
+        return
+
+    omitted_species = _select_step2_omitted_species(grouped_species_error, sensitivity_tolerance)
+    exported_model_path = fromcomsolRE.export_reduced_comsol_model(omitted_species)
+    print(
+        f"Saved reduced COMSOL model copy with {len(omitted_species)} omitted species: "
+        f"{exported_model_path}"
+    )
 
 if __name__ == "__main__":
 
@@ -925,6 +1051,7 @@ if __name__ == "__main__":
             all_species = fromchemKIN.get_species()
             all_reactions = fromchemKIN.get_reactions()
         case "COMSOL_thermal":
+            fromcomsolRE.set_comsol_session_mode("stand-alone")
             fromcomsolRE.load_comsol_model(comsol_therm_model)
             all_species = fromcomsolRE.get_species()
             all_reactions = fromcomsolRE.get_reactions()
@@ -936,7 +1063,15 @@ if __name__ == "__main__":
     # Get Error lists
     match status:
         case "nothing":
-            project_handler.write_header(model_type, comparator_type, sensitivity_tolerance, excluded_species, input_folder, all_species, all_reactions)
+            project_handler.write_header(
+                model_type,
+                comparator_type,
+                sensitivity_tolerance,
+                excluded_species,
+                input_folder,
+                all_species,
+                all_reactions,
+            )
         case "initialized":
             check_project_similarity()
         case "step 1":
@@ -980,11 +1115,14 @@ if __name__ == "__main__":
     if status == "step 1" or status == "step 2" or status == "step 3" or status == "step 4":
         pass
     else:
+        step1_progress = project_handler.get_step_progress(1)
         single_species_error = run_reduced_species_error_parallel(
             conditions_list.conditions,
             list_species,
             standard_data,
-            comparator_type
+            comparator_type,
+            checkpoint_step_number=1,
+            existing_error_list=step1_progress,
         )
 
         project_handler.write_step_error(1, single_species_error)
@@ -997,12 +1135,17 @@ if __name__ == "__main__":
         # Group species from the previous error list
         # Most important species are on top, hence the inverse pyramid
         list_grouped_species = inverse_item_pyramid_builder(single_species_error)
+        step2_progress = project_handler.get_step_progress(2)
         # step two
         grouped_species_error = run_reduced_species_error_parallel(
             conditions_list.conditions,
             list_grouped_species,
             standard_data,
-            comparator_type
+            comparator_type,
+            checkpoint_step_number=2,
+            existing_error_list=step2_progress,
         )
 
         project_handler.write_step_error(2, grouped_species_error)
+
+    _export_step2_comsol_copy(grouped_species_error)

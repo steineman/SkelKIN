@@ -90,7 +90,7 @@ class TestConditions:
 
 
 class ItemError:
-    def __init__(self, item: str | tuple[str], value: float, max_value: float, weight: float = 1):
+    def __init__(self, item: str | tuple[str], value: float, max_value: float, weight: float = 1, comment: str = ""):
         """
         item: "CO2" | "CO2 + O <=> CO + O2" | tuple["CO2", "CH4"] | tuple["CO2 + O <=> CO + O2", "..."]
         value: float
@@ -101,6 +101,7 @@ class ItemError:
         self.value = value
         self.max_value = max_value
         self.weight = weight
+        self.comment = comment
 
     def get_item(self) -> str | tuple[str]:
         return self.item
@@ -111,6 +112,9 @@ class ItemError:
     def get_max_value(self) -> float:
         return self.max_value
 
+    def get_comment(self) -> str:
+        return self.comment
+
     def set_item(self, item: str | tuple[str]):
         self.item = item
 
@@ -119,6 +123,9 @@ class ItemError:
 
     def reset_max_value(self, max_value: float):
         self.max_value = max_value
+
+    def reset_comment(self, comment: str):
+        self.comment = comment
 
     def confirm_max_value(self, new_max_value: float):
         self.max_value = max(new_max_value, self.max_value)

@@ -19,10 +19,17 @@ state variables to improve numerical conditioning.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from html import unescape
 from pathlib import Path
+import json
 import math
+import os
+import platform
 import re
+import subprocess
+import sys
+import time
 import warnings
 import xml.etree.ElementTree as ET
 import zipfile
@@ -83,22 +90,85 @@ _model_file = _DEFAULT_MODEL
 _cached_model: "ComsolModel | None" = None
 _cached_client = None
 _cached_comsol_model = None
-_cached_feature_nodes: "dict[str, dict[str, object]] | None" = None
+_cached_feature_nodes_model = None
+_cached_feature_nodes: dict[str, dict[str, object]] | None = None
+_cached_applied_mechanism: tuple[frozenset[str], frozenset[str]] | None = None
+_cached_runtime_model = None
+_cached_runtime = None
 _comsol_cores = 1
+_comsol_session_mode = "client-server"
 
 _COMSOL_STUDY_NAME = "Parametric"
 _COMSOL_DATASET_NAME = "Parametric//Solution 1"
-_COMSOL_STEP_FUNCTION_PATH = "functions/Temp"
+_COMSOL_TEMPERATURE_FUNCTION_LABEL = "Temp"
+_COMSOL_TEMPERATURE_FUNCTION_TAG = "step1"
 _COMSOL_SWEEP_PATH = "studies/Parametric/All"
 _COMSOL_PHYSICS_PATH = "physics/Reaction Engineering"
 _COMSOL_EVALUATIONS_PATH = "evaluations"
 _COMSOL_CONCENTRATION_PLOT_PATH = "plots/Concentration (re)"
-_COMSOL_INITIAL_TIMESTEP = 1e-9
-_COMSOL_STEP_SMOOTHING = 1e-7
-_COMSOL_RETRY_MAXSTEP_FACTOR = 100.0
-_COMSOL_RETRY_MINSTEP = 1e-4
-_COMSOL_RETRY_MAXITER = 50
-_COMSOL_RETRY_PIVOT_PERTURB = 1e-8
+_COMSOL_TEMP_STUDY_LABEL = "SkelKIN Study"
+_COMSOL_TEMP_DATASET_LABEL = "SkelKIN Dataset"
+_COMSOL_TEMPERATURE_INTERPOLATION = "piecewisecubic"
+_COMSOL_INITIAL_TIMESTEP = 1e-10
+_COMSOL_MAXSTEP_PLATEAU_DIVISOR = 50.0
+_COMSOL_NONLINEAR_MINSTEP = 1e-5
+_COMSOL_NONLINEAR_MAXITER = 80
+_COMSOL_PIVOT_PERTURB = 1e-7
+_COMSOL_RETRY_MAXSTEP_DIVISOR = 200.0
+_COMSOL_RETRY_MINSTEP = 1e-7
+_COMSOL_RETRY_MAXITER = 150
+_COMSOL_RETRY_PIVOT_PERTURB = 1e-5
+_COMSOL_TRANSITION_MULTIPLIERS = (10.0, 100.0, 1000.0, 10000.0, 100000.0)
+_COMSOL_SEGMENTATION_EXTRA_POINTS = 3
+_COMSOL_START_RETRIES = 3
+_COMSOL_START_RETRY_DELAY = 2.0
+# Add fixed COMSOL parameters here if they should be pushed from Python into the model.
+_COMSOL_MODEL_PARAMETERS: dict[str, str | float | int] = {}
+
+
+def _prepare_comsol_runtime() -> None:
+    """Prepare COMSOL runtime state before starting an ``mph`` session.
+
+    On Windows, `mph` can run COMSOL in stand-alone mode, which avoids the
+    separate webbridge server and its Equinox storage initialization. We also
+    pre-create the OSGi lock directory used by COMSOL so parallel workers do
+    not fail on first access.
+    """
+
+    if not MPH_AVAILABLE:
+        return
+
+    mph.option("session", _comsol_session_mode)
+
+    comsol_home = Path.home() / ".comsol"
+    if comsol_home.exists():
+        for version_dir in comsol_home.iterdir():
+            if not version_dir.is_dir():
+                continue
+            if not version_dir.name.startswith("v"):
+                continue
+            manager_dir = version_dir / "configuration" / "comsol" / "org.eclipse.osgi" / ".manager"
+            manager_dir.mkdir(parents=True, exist_ok=True)
+
+    # Some COMSOL/MPh code paths expect APPDATA to exist and be writable.
+    os.environ.setdefault("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+
+
+def _start_mph_client():
+    """Start an `mph` client with a few retries for transient COMSOL startup failures."""
+
+    last_error: Exception | None = None
+    for attempt in range(1, _COMSOL_START_RETRIES + 1):
+        try:
+            _prepare_comsol_runtime()
+            return mph.start(cores=_comsol_cores)
+        except Exception as exc:
+            last_error = exc
+            if attempt == _COMSOL_START_RETRIES:
+                break
+            time.sleep(_COMSOL_START_RETRY_DELAY)
+    assert last_error is not None
+    raise last_error
 
 
 def _unit_factor(unit_expression: str) -> float:
@@ -292,6 +362,16 @@ class ReactionSystemData:
     product_orders: np.ndarray
 
 
+@dataclass
+class ComsolRuntime:
+    """Persistent worker-local COMSOL study, solver, and dataset."""
+
+    study: object
+    step: object
+    solution: object
+    dataset: object
+
+
 class ComsolModel:
     """Parsed COMSOL reaction mechanism cached in memory."""
 
@@ -444,14 +524,41 @@ def _resolve_model_path(path_like: str | Path | None) -> Path:
     return (Path.cwd() / path).resolve()
 
 
+def _reset_cached_runtime(*, remove_nodes: bool = False) -> None:
+    """Drop the cached worker-local COMSOL runtime, optionally removing its nodes."""
+
+    global _cached_runtime_model, _cached_runtime
+
+    runtime_model = _cached_runtime_model
+    runtime = _cached_runtime
+
+    if remove_nodes and runtime_model is not None and runtime is not None:
+        for container_path, node in (
+            ("datasets", runtime.dataset),
+            ("solutions", runtime.solution),
+            ("studies", runtime.study),
+        ):
+            try:
+                tag = node.tag()
+            except Exception:
+                tag = None
+            _remove_comsol_node(runtime_model / container_path, tag)
+
+    _cached_runtime_model = None
+    _cached_runtime = None
+
+
 def load_model_to_yaml(kinetic: str | Path, thermo: str | Path | None = None):
     """Compatibility wrapper that stores the COMSOL model path."""
 
     del thermo
-    global _model_file, _cached_model, _cached_client, _cached_comsol_model, _cached_feature_nodes
+    global _model_file, _cached_model, _cached_client, _cached_comsol_model, _cached_applied_mechanism, _cached_feature_nodes_model, _cached_feature_nodes
     _model_file = _resolve_model_path(kinetic)
     _cached_model = None
+    _cached_applied_mechanism = None
+    _cached_feature_nodes_model = None
     _cached_feature_nodes = None
+    _reset_cached_runtime()
     if _cached_client is not None:
         try:
             _cached_client.remove(_cached_comsol_model)
@@ -471,10 +578,35 @@ def load_comsol_model(model_file: str | Path):
 def set_comsol_cores(cores: int = 1):
     """Set the number of CPU cores used by each COMSOL/mph session."""
 
-    global _comsol_cores, _cached_client, _cached_comsol_model
+    global _comsol_cores, _cached_client, _cached_comsol_model, _cached_applied_mechanism, _cached_feature_nodes_model, _cached_feature_nodes
     cores = max(1, int(cores))
     if cores != _comsol_cores:
         _comsol_cores = cores
+        _cached_applied_mechanism = None
+        _cached_feature_nodes_model = None
+        _cached_feature_nodes = None
+        _reset_cached_runtime()
+        if _cached_client is not None:
+            try:
+                _cached_client.remove(_cached_comsol_model)
+            except Exception:
+                pass
+            _cached_client = None
+            _cached_comsol_model = None
+
+
+def set_comsol_session_mode(mode: str = "client-server"):
+    """Set the MPh session mode used for future COMSOL starts."""
+
+    global _comsol_session_mode, _cached_client, _cached_comsol_model, _cached_applied_mechanism, _cached_feature_nodes_model, _cached_feature_nodes
+    if mode not in {"client-server", "stand-alone"}:
+        raise ValueError("COMSOL session mode must be 'client-server' or 'stand-alone'.")
+    if mode != _comsol_session_mode:
+        _comsol_session_mode = mode
+        _cached_applied_mechanism = None
+        _cached_feature_nodes_model = None
+        _cached_feature_nodes = None
+        _reset_cached_runtime()
         if _cached_client is not None:
             try:
                 _cached_client.remove(_cached_comsol_model)
@@ -507,34 +639,59 @@ def _get_comsol_model():
     if not MPH_AVAILABLE:
         raise RuntimeError("The mph library is required for COMSOL-backed solves.")
 
-    global _cached_client, _cached_comsol_model
+    global _cached_client, _cached_comsol_model, _cached_applied_mechanism, _cached_feature_nodes_model, _cached_feature_nodes
     if _cached_comsol_model is None:
-        _cached_client = mph.start(cores=_comsol_cores)
+        _cached_client = _start_mph_client()
         _cached_comsol_model = _cached_client.load(str(_model_file))
+        _cached_applied_mechanism = None
+        _cached_feature_nodes_model = None
+        _cached_feature_nodes = None
+        _reset_cached_runtime()
     return _cached_comsol_model
 
 
-def _get_feature_nodes() -> dict[str, dict[str, object]]:
+def _get_feature_nodes(model) -> dict[str, dict[str, object]]:
     """Map COMSOL feature tags to toggleable species and reaction nodes."""
 
-    global _cached_feature_nodes
-    if _cached_feature_nodes is None:
-        physics = _get_comsol_model() / _COMSOL_PHYSICS_PATH
-        species_nodes: dict[str, object] = {}
-        reaction_nodes: dict[str, object] = {}
+    global _cached_feature_nodes_model, _cached_feature_nodes
+    if _cached_feature_nodes_model is model and _cached_feature_nodes is not None:
+        return _cached_feature_nodes
 
-        for child in physics.children():
-            if child.type() == "SpeciesChem":
-                species_nodes[child.tag()] = child
-            elif child.type() == "ReactionChem":
-                reaction_nodes[child.tag()] = child
+    physics = model / _COMSOL_PHYSICS_PATH
+    species_nodes: dict[str, object] = {}
+    reaction_nodes: dict[str, object] = {}
 
-        _cached_feature_nodes = {
-            "species": species_nodes,
-            "reactions": reaction_nodes,
-        }
+    for child in physics.children():
+        if child.type() == "SpeciesChem":
+            species_nodes[child.tag()] = child
+        elif child.type() == "ReactionChem":
+            reaction_nodes[child.tag()] = child
 
+    _cached_feature_nodes_model = model
+    _cached_feature_nodes = {
+        "species": species_nodes,
+        "reactions": reaction_nodes,
+    }
     return _cached_feature_nodes
+
+
+def _collect_feature_nodes(model) -> dict[str, dict[str, object]]:
+    """Collect species/reaction feature nodes without touching global caches."""
+
+    physics = model / _COMSOL_PHYSICS_PATH
+    species_nodes: dict[str, object] = {}
+    reaction_nodes: dict[str, object] = {}
+
+    for child in physics.children():
+        if child.type() == "SpeciesChem":
+            species_nodes[child.tag()] = child
+        elif child.type() == "ReactionChem":
+            reaction_nodes[child.tag()] = child
+
+    return {
+        "species": species_nodes,
+        "reactions": reaction_nodes,
+    }
 
 
 def get_species():
@@ -549,6 +706,98 @@ def get_reactions():
 
     model = _get_model()
     return [reaction.equation for reaction in model.reactions]
+
+
+def _export_reduced_comsol_model_impl(
+    model_file: str | Path,
+    omitted_species: list[str],
+    output_file: str | Path,
+    *,
+    session_mode: str,
+    cores: int,
+) -> Path:
+    """Save a reduced COMSOL copy inside one isolated Python process."""
+
+    global _comsol_session_mode, _comsol_cores
+
+    model_path = Path(model_file).resolve()
+    output_path = Path(output_file).resolve()
+    omitted_species = list(dict.fromkeys(omitted_species))
+
+    _comsol_session_mode = session_mode
+    _comsol_cores = max(1, int(cores))
+
+    mechanism = ComsolModel(model_path).reduced(omitted_species=omitted_species)
+    kept_species = {species.name for species in mechanism.species}
+    kept_reactions = {reaction.tag for reaction in mechanism.reactions}
+
+    client = _start_mph_client()
+    model = client.load(str(model_path))
+    try:
+        feature_nodes = _collect_feature_nodes(model)
+        for tag, node in feature_nodes["species"].items():
+            node.toggle("enable" if tag in kept_species else "disable")
+        for tag, node in feature_nodes["reactions"].items():
+            node.toggle("enable" if tag in kept_reactions else "disable")
+        model.save(str(output_path))
+    finally:
+        try:
+            client.remove(model)
+        except Exception:
+            pass
+
+    return output_path
+
+
+def export_reduced_comsol_model(
+    omitted_species: list[str],
+    output_file: str | Path | None = None,
+) -> Path:
+    """Save a copy of the COMSOL model with omitted species disabled.
+
+    Reactions removed by those omitted species are also disabled so the saved
+    Reaction Engineering model remains internally consistent.
+    """
+
+    omitted_species = list(dict.fromkeys(omitted_species))
+
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = _model_file.with_name(f"{_model_file.stem}_SkelKIN_{timestamp}{_model_file.suffix}")
+
+    output_path = Path(output_file).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    module_dir = Path(__file__).resolve().parent
+    script = (
+        "import json, sys; "
+        "sys.path.insert(0, sys.argv[1]); "
+        "import fromcomsolRE; "
+        "fromcomsolRE._export_reduced_comsol_model_impl("
+        "sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], "
+        "session_mode=sys.argv[5], cores=int(sys.argv[6]))"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(module_dir),
+            str(_model_file),
+            json.dumps(omitted_species),
+            str(output_path),
+            "client-server",
+            str(_comsol_cores),
+        ],
+        cwd=str(module_dir),
+        capture_output=True,
+        text=True,
+    )
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "Unknown export failure."
+        raise RuntimeError(detail) from None
+
+    return output_path
 
 
 def _condition_pressure(condition: cond.ThermalCondition, time_value: float) -> float:
@@ -1089,35 +1338,115 @@ def _simulate_mechanism(condition: cond.ThermalCondition, mechanism: MechanismVi
     return list(t_values), result_dict
 
 
-def _condition_step_parameters(condition: cond.ThermalCondition) -> tuple[float, float, float, float]:
-    """Extract a single step change from a thermal condition.
-
-    Returns ``(location, start_temperature, end_temperature, smoothing_width)``.
-
-    The COMSOL model uses a step function with ``locationdef = beginning``, so
-    the step location is the start of the smoothing window. A condition profile
-    like ``0.5 s -> 300 K`` and ``0.5000001 s -> 5000 K`` therefore maps to a
-    step starting at ``0.5 s`` with ``smooth = 1e-7 s``.
-    """
+def _condition_temperature_profile(condition: cond.ThermalCondition) -> tuple[list[float], list[float]]:
+    """Return a validated temperature profile for COMSOL interpolation."""
 
     times, temperatures = condition.temperature_profile
     if not times or not temperatures or len(times) != len(temperatures):
         raise ValueError("Condition temperature profile is empty or malformed.")
 
-    location = times[0]
-    start_temperature = temperatures[0]
-    end_temperature = temperatures[-1]
-    smoothing_width = _COMSOL_STEP_SMOOTHING
+    cleaned_times: list[float] = []
+    cleaned_temperatures: list[float] = []
 
-    for index in range(len(temperatures) - 1):
-        if temperatures[index] != temperatures[index + 1]:
-            start_time = float(times[index])
-            location = start_time
-            start_temperature = temperatures[index]
-            end_temperature = temperatures[index + 1]
-            break
+    for raw_time, raw_temperature in zip(times, temperatures):
+        time_value = float(raw_time)
+        temperature_value = float(raw_temperature)
+        if cleaned_times and time_value <= cleaned_times[-1]:
+            raise ValueError("Condition temperature times must be strictly increasing for cubic interpolation.")
+        cleaned_times.append(time_value)
+        cleaned_temperatures.append(temperature_value)
 
-    return float(location), float(start_temperature), float(end_temperature), float(smoothing_width)
+    return cleaned_times, cleaned_temperatures
+
+
+def _condition_initial_temperature(condition: cond.ThermalCondition) -> float:
+    """Return the starting gas temperature for the COMSOL RE initial condition."""
+
+    _, temperatures = _condition_temperature_profile(condition)
+    return float(temperatures[0])
+
+
+def _condition_smallest_time_step(condition: cond.ThermalCondition) -> float:
+    """Return the smallest positive time increment in the temperature profile."""
+
+    times, _ = _condition_temperature_profile(condition)
+    if len(times) < 2:
+        return _COMSOL_INITIAL_TIMESTEP
+    min_step = min(times[index + 1] - times[index] for index in range(len(times) - 1))
+    return max(float(min_step), _COMSOL_INITIAL_TIMESTEP)
+
+
+def _condition_plateau_time_step(condition: cond.ThermalCondition) -> float:
+    """Return a representative non-transition timescale for the condition."""
+
+    times, _ = _condition_temperature_profile(condition)
+    if len(times) < 2:
+        return _COMSOL_INITIAL_TIMESTEP
+
+    deltas = [times[index + 1] - times[index] for index in range(len(times) - 1)]
+    smallest = min(deltas)
+    threshold = max(_COMSOL_INITIAL_TIMESTEP * 1e3, smallest * 100.0)
+    significant = [delta for delta in deltas if delta > threshold]
+    if significant:
+        return min(significant)
+    return max(float(smallest), _COMSOL_INITIAL_TIMESTEP)
+
+
+def _condition_solver_times(condition: cond.ThermalCondition) -> list[float]:
+    """Return the explicit COMSOL output times for one condition.
+
+    The condition files define the forcing profile. COMSOL should therefore
+    solve/output on that same timeline rather than reusing the 1-second study
+    range stored in the original `.mph`.
+    """
+
+    times, temperatures = _condition_temperature_profile(condition)
+    solver_times = [0.0] if times[0] > 0.0 else []
+    solver_times.extend(times)
+
+    for index in range(len(times) - 1):
+        start_time = float(times[index])
+        end_time = float(times[index + 1])
+        start_temperature = float(temperatures[index])
+        end_temperature = float(temperatures[index + 1])
+
+        if math.isclose(start_temperature, end_temperature, rel_tol=0.0, abs_tol=0.0):
+            continue
+
+        transition_width = end_time - start_time
+        next_time = float(times[index + 2]) if index + 2 < len(times) else end_time
+        for multiplier in _COMSOL_TRANSITION_MULTIPLIERS:
+            candidate = end_time + transition_width * multiplier
+            if candidate < next_time:
+                solver_times.append(candidate)
+
+    return sorted(set(solver_times))
+
+
+def _condition_tlist_string(condition: cond.ThermalCondition) -> str:
+    """Serialize the condition times for COMSOL's `tlist` property."""
+
+    return " ".join(str(time_value) for time_value in _condition_solver_times(condition))
+
+
+def _solver_times_to_string(times: list[float]) -> str:
+    """Serialize an explicit time list for COMSOL."""
+
+    return " ".join(str(time_value) for time_value in times)
+
+
+def _condition_smallest_solver_step(condition: cond.ThermalCondition) -> float:
+    """Return the smallest strictly positive time increment in the solver grid."""
+
+    solver_times = _condition_solver_times(condition)
+    positive_steps = [
+        solver_times[index + 1] - solver_times[index]
+        for index in range(len(solver_times) - 1)
+        if solver_times[index + 1] - solver_times[index] > 0.0
+    ]
+    if not positive_steps:
+        return _COMSOL_INITIAL_TIMESTEP
+    return min(positive_steps)
 
 
 def _condition_xch4(condition: cond.ThermalCondition) -> float:
@@ -1126,65 +1455,346 @@ def _condition_xch4(condition: cond.ThermalCondition) -> float:
     return float(condition.species.get("CH4", 0.0))
 
 
-def _configure_comsol_temperature_function(model, conditions: list[cond.ThermalCondition]) -> None:
-    """Map the condition-file temperature step to COMSOL's ``Temp`` function."""
+def _condition_model_parameters(condition: cond.ThermalCondition) -> dict[str, str | float | int]:
+    """Return the Python-owned COMSOL parameter set for one condition."""
 
-    step_parameters = [_condition_step_parameters(condition) for condition in conditions]
-    jump_times = {params[0] for params in step_parameters}
-    if len(jump_times) != 1:
-        raise NotImplementedError("All COMSOL conditions must share the same temperature step location.")
-
-    step = (model / _COMSOL_STEP_FUNCTION_PATH).java
-    step.set("locationdef", "beginning")
-    step.set("smoothactive", True)
-    step.set("from", "Tstart")
-    step.set("to", "Tend")
-    step.set("smooth", "slope")
-    step.set("location", str(step_parameters[0][0]))
+    parameters = dict(_COMSOL_MODEL_PARAMETERS)
+    parameters["xCH4"] = _condition_xch4(condition)
+    parameters["T_g"] = _condition_initial_temperature(condition)
+    return parameters
 
 
-def _configure_comsol_time_solver(model, conditions: list[cond.ThermalCondition]) -> None:
-    """Apply the minimum solver overrides required by the workflow."""
+def _apply_comsol_model_parameters(model, parameters: dict[str, str | float | int]) -> None:
+    """Write Python-owned parameter values into the COMSOL model."""
 
-    solver = model / "solutions" / "Solution 1" / "Time-Dependent Solver 1"
+    for name, value in parameters.items():
+        model.parameter(name, str(value))
+
+
+def _ensure_comsol_temperature_function(model):
+    """Ensure the COMSOL model has a cubic interpolation function named ``Temp``."""
+
+    functions = (model / "functions").java
+
+    try:
+        existing = next(
+            child for child in (model / "functions").children()
+            if child.tag() == _COMSOL_TEMPERATURE_FUNCTION_TAG
+        )
+    except StopIteration:
+        existing = None
+
+    if existing is not None and existing.type() != "Interpolation":
+        functions.remove(_COMSOL_TEMPERATURE_FUNCTION_TAG)
+        existing = None
+
+    if existing is None:
+        feature = functions.create(_COMSOL_TEMPERATURE_FUNCTION_TAG, "Interpolation")
+        feature.label(_COMSOL_TEMPERATURE_FUNCTION_LABEL)
+    else:
+        feature = existing.java
+        feature.label(_COMSOL_TEMPERATURE_FUNCTION_LABEL)
+
+    return feature
+
+
+def _configure_comsol_temperature_function(model, condition: cond.ThermalCondition) -> None:
+    """Map the condition-file temperature profile to COMSOL's ``T_var(t)``."""
+
+    times, temperatures = _condition_temperature_profile(condition)
+    function = _ensure_comsol_temperature_function(model)
+    function.set("funcname", "T_var")
+    # Global cubic splines overshoot badly on flat/jump/flat profiles.
+    # COMSOL's piecewise-cubic interpolation keeps the forcing local while
+    # still using cubic polynomials between points.
+    function.set("interp", _COMSOL_TEMPERATURE_INTERPOLATION)
+    function.set("extrap", "const")
+    function.set("argunit", ["s"])
+    function.set("fununit", "K")
+    function.set(
+        "table",
+        [[str(time_value), str(temperature_value)] for time_value, temperature_value in zip(times, temperatures)],
+    )
+
+
+def _configure_comsol_time_solver(solution, condition: cond.ThermalCondition) -> None:
+    """Apply conservative Python-owned solver settings to one temporary COMSOL solution."""
+
+    solver = solution / "Time-Dependent Solver 1"
     fully_coupled = solver / "Fully Coupled 1"
     direct = solver / "Direct"
+    plateau_step = _condition_plateau_time_step(condition)
 
     solver.property("initialstepbdfactive", True)
     solver.property("initialstepbdf", _COMSOL_INITIAL_TIMESTEP)
-    solver.property("maxstepbdf", 0.1)
+    solver.property(
+        "maxstepbdf",
+        min(0.02, max(plateau_step / _COMSOL_MAXSTEP_PLATEAU_DIVISOR, _COMSOL_INITIAL_TIMESTEP)),
+    )
     solver.property("plot", "off")
-    fully_coupled.property("maxiter", _COMSOL_RETRY_MAXITER)
-    fully_coupled.property("minstep", _COMSOL_RETRY_MINSTEP)
+    solver.property("tlist", _condition_tlist_string(condition))
+    fully_coupled.property("maxiter", _COMSOL_NONLINEAR_MAXITER)
+    fully_coupled.property("minstep", _COMSOL_NONLINEAR_MINSTEP)
     fully_coupled.property("jtech", "onevery")
-    direct.property("pivotperturb", _COMSOL_RETRY_PIVOT_PERTURB)
+    direct.property("pivotperturb", _COMSOL_PIVOT_PERTURB)
 
 
-def _configure_comsol_parametric_study(model, conditions: list[cond.ThermalCondition]) -> None:
-    """Populate the COMSOL parametric sweep from the condition files."""
+def _create_comsol_runtime(model, condition: cond.ThermalCondition) -> ComsolRuntime:
+    """Create the persistent worker-local study, solver, and dataset."""
 
-    step_parameters = [_condition_step_parameters(condition) for condition in conditions]
-    xch4_values = " ".join(str(_condition_xch4(condition)) for condition in conditions)
-    tstart_values = " ".join(str(params[1]) for params in step_parameters)
-    tend_values = " ".join(str(params[2]) for params in step_parameters)
-    slope_values = [float(params[3]) for params in step_parameters]
+    existing_solution_tags = {solution.tag() for solution in (model / "solutions").children()}
+    study = (model / "studies").create(name=_COMSOL_TEMP_STUDY_LABEL)
+    step = study.create("Transient", name="Run")
 
-    if slope_values:
-        model.parameter("slope", str(slope_values[0]))
+    step.property("tlist", _condition_tlist_string(condition))
 
-    study = (model / _COMSOL_SWEEP_PATH).java
-    parameter_names = ["xCH4", "Tstart", "Tend"]
-    parameter_lists = [xch4_values, tstart_values, tend_values]
-    parameter_units = ["", "K", "K"]
+    study.java.createAutoSequences("all")
 
-    if len({value for value in slope_values}) > 1:
-        parameter_names.append("slope")
-        parameter_lists.append(" ".join(str(value) for value in slope_values))
-        parameter_units.append("s")
+    created_solutions = [
+        solution for solution in (model / "solutions").children()
+        if solution.tag() not in existing_solution_tags
+    ]
+    if len(created_solutions) != 1:
+        raise RuntimeError("Failed to identify the temporary COMSOL solution sequence.")
 
-    study.set("pname", JArray(JString)(parameter_names))
-    study.set("plistarr", JArray(JString)(parameter_lists))
-    study.set("punit", JArray(JString)(parameter_units))
+    solution = created_solutions[0]
+    _configure_comsol_time_solver(solution, condition)
+    dataset = (model / "datasets").create("Solution", name=_COMSOL_TEMP_DATASET_LABEL)
+    dataset.property("solution", solution.tag())
+    return ComsolRuntime(study=study, step=step, solution=solution, dataset=dataset)
+
+
+def _runtime_is_valid(runtime: ComsolRuntime | None) -> bool:
+    """Return whether the cached runtime still points to live COMSOL nodes."""
+
+    if runtime is None:
+        return False
+
+    try:
+        runtime.study.tag()
+        runtime.step.tag()
+        runtime.solution.tag()
+        runtime.dataset.tag()
+    except Exception:
+        return False
+    return True
+
+
+def _configure_comsol_runtime(runtime: ComsolRuntime, condition: cond.ThermalCondition) -> None:
+    """Update the persistent runtime nodes for one condition."""
+
+    runtime.step.property("tlist", _condition_tlist_string(condition))
+    runtime.dataset.property("solution", runtime.solution.tag())
+    _configure_comsol_time_solver(runtime.solution, condition)
+
+
+def _set_runtime_tlist(runtime: ComsolRuntime, times: list[float]) -> None:
+    """Update the temporary study and solver with one explicit segment time list."""
+
+    tlist = _solver_times_to_string(times)
+    runtime.step.property("tlist", tlist)
+    time_solver = runtime.solution / "Time-Dependent Solver 1"
+    time_solver.property("tlist", tlist)
+
+
+def _condition_transition_end_times(condition: cond.ThermalCondition) -> list[float]:
+    """Return the times at which a temperature transition interval ends."""
+
+    times, temperatures = _condition_temperature_profile(condition)
+    transition_ends: list[float] = []
+    for index in range(len(times) - 1):
+        if not math.isclose(float(temperatures[index]), float(temperatures[index + 1]), rel_tol=0.0, abs_tol=0.0):
+            transition_ends.append(float(times[index + 1]))
+    return transition_ends
+
+
+def _condition_transition_priority_boundaries(condition: cond.ThermalCondition) -> list[float]:
+    """Return continuation boundaries ordered from latest/slowest fallback first."""
+
+    times, temperatures = _condition_temperature_profile(condition)
+    solver_times = _condition_solver_times(condition)
+    boundaries: list[float] = []
+
+    for index in range(len(times) - 2, -1, -1):
+        start_time = float(times[index])
+        end_time = float(times[index + 1])
+        start_temperature = float(temperatures[index])
+        end_temperature = float(temperatures[index + 1])
+        if math.isclose(start_temperature, end_temperature, rel_tol=0.0, abs_tol=0.0):
+            continue
+
+        next_time = float(times[index + 2]) if index + 2 < len(times) else float("inf")
+        per_transition = [end_time]
+        post_transition = [
+            time_value
+            for time_value in solver_times
+            if end_time < time_value < next_time
+        ]
+        per_transition.extend(post_transition[:_COMSOL_SEGMENTATION_EXTRA_POINTS])
+
+        for boundary in per_transition:
+            if any(math.isclose(boundary, existing, rel_tol=0.0, abs_tol=1e-12) for existing in boundaries):
+                continue
+            boundaries.append(boundary)
+
+    return boundaries
+
+
+def _split_solver_times_at_boundaries(
+    solver_times: list[float],
+    boundary_times: list[float],
+) -> list[list[float]]:
+    """Split one explicit time grid at the requested boundary times."""
+
+    if len(solver_times) <= 1 or not boundary_times:
+        return [solver_times]
+
+    segments: list[list[float]] = []
+    current_segment: list[float] = []
+    for time_value in solver_times:
+        current_segment.append(time_value)
+        if any(math.isclose(time_value, boundary, rel_tol=0.0, abs_tol=1e-12) for boundary in boundary_times):
+            segments.append(current_segment)
+            current_segment = []
+
+    if current_segment:
+        segments.append(current_segment)
+
+    filtered = [segment for segment in segments if segment]
+    if len(filtered) <= 1:
+        return filtered
+
+    merged: list[list[float]] = []
+    index = 0
+    while index < len(filtered):
+        segment = list(filtered[index])
+        while len(segment) < 2 and index + 1 < len(filtered):
+            index += 1
+            segment.extend(filtered[index])
+        if len(segment) < 2 and merged:
+            merged[-1].extend(segment)
+        else:
+            merged.append(segment)
+        index += 1
+    return merged
+
+
+def _condition_solver_segmentations(condition: cond.ThermalCondition) -> list[list[list[float]]]:
+    """Return progressively more segmented solve plans for one condition.
+
+    The first plan is a monolithic run. Later plans add continuation breaks
+    from the latest transition end backwards, which targets late-time failures
+    without over-constraining the earlier jump unless needed.
+    """
+
+    solver_times = _condition_solver_times(condition)
+    plans: list[list[list[float]]] = [[solver_times]]
+    priority_boundaries = _condition_transition_priority_boundaries(condition)
+    for count in range(1, len(priority_boundaries) + 1):
+        boundaries = priority_boundaries[:count]
+        plan = _split_solver_times_at_boundaries(solver_times, boundaries)
+        if plan != plans[-1]:
+            plans.append(plan)
+    return plans
+
+
+def _ensure_comsol_runtime(
+    model,
+    condition: cond.ThermalCondition,
+    *,
+    recreate: bool = False,
+) -> ComsolRuntime:
+    """Return the worker-local runtime, creating or rebuilding it as needed."""
+
+    global _cached_runtime_model, _cached_runtime
+
+    if recreate and _cached_runtime_model is model:
+        _reset_cached_runtime(remove_nodes=True)
+
+    if _cached_runtime_model is not model or not _runtime_is_valid(_cached_runtime):
+        _cached_runtime_model = model
+        _cached_runtime = _create_comsol_runtime(model, condition)
+    else:
+        _configure_comsol_runtime(_cached_runtime, condition)
+
+    return _cached_runtime
+
+
+def _clear_comsol_runtime_solution(runtime: ComsolRuntime) -> None:
+    """Drop previously computed solution data while keeping the solver sequence."""
+
+    try:
+        if not runtime.solution.java.isEmpty():
+            runtime.solution.java.clearSolutionData()
+    except Exception:
+        try:
+            runtime.solution.java.clearSolution()
+        except Exception:
+            pass
+
+
+def _merge_comsol_segment_results(
+    accumulated_times: list[float],
+    accumulated_results: dict[str, list[float]],
+    segment_times: list[float],
+    segment_results: dict[str, list[float]],
+) -> tuple[list[float], dict[str, list[float]]]:
+    """Append one segment result, skipping any overlap already present."""
+
+    if not accumulated_times:
+        return list(segment_times), {name: list(values) for name, values in segment_results.items()}
+
+    overlap_tolerance = 1e-12
+    last_time = accumulated_times[-1]
+    start_index = 0
+    while start_index < len(segment_times) and segment_times[start_index] <= last_time + overlap_tolerance:
+        start_index += 1
+
+    if start_index >= len(segment_times):
+        return accumulated_times, accumulated_results
+
+    accumulated_times.extend(segment_times[start_index:])
+    for species_name, values in segment_results.items():
+        accumulated_results[species_name].extend(values[start_index:])
+    return accumulated_times, accumulated_results
+
+
+def _run_comsol_runtime_segments(
+    model,
+    runtime: ComsolRuntime,
+    mechanism: MechanismView,
+    segments: list[list[float]],
+) -> tuple[list[float], dict[str, list[float]]]:
+    """Solve one condition by continuing across explicit time segments."""
+
+    if not segments:
+        raise RuntimeError("Condition does not define any solver times.")
+
+    stitched_times: list[float] = []
+    stitched_results: dict[str, list[float]] = {}
+
+    _set_runtime_tlist(runtime, segments[0])
+    runtime.study.java.run()
+    segment_times, segment_results = _evaluate_current_comsol_solution(model, mechanism, dataset=runtime.dataset)
+    stitched_times, stitched_results = _merge_comsol_segment_results(
+        stitched_times,
+        stitched_results,
+        segment_times,
+        segment_results,
+    )
+
+    for segment in segments[1:]:
+        _set_runtime_tlist(runtime, segment)
+        runtime.solution.java.continueRun()
+        segment_times, segment_results = _evaluate_current_comsol_solution(model, mechanism, dataset=runtime.dataset)
+        stitched_times, stitched_results = _merge_comsol_segment_results(
+            stitched_times,
+            stitched_results,
+            segment_times,
+            segment_results,
+        )
+
+    return stitched_times, stitched_results
 
 
 def _configure_comsol_result_plots(model) -> None:
@@ -1216,22 +1826,30 @@ def _configure_comsol_result_plots(model) -> None:
     plot_group.property("xlabel", "Time [s]")
 
 
-def _is_stepdown_condition(condition: cond.ThermalCondition) -> bool:
-    """Return whether the imposed temperature profile is a cooling step."""
+def _configure_comsol_retry_solver(solution, condition: cond.ThermalCondition) -> None:
+    """Apply a harsher solver configuration for retrying hard cases."""
 
-    _, start_temperature, end_temperature, _ = _condition_step_parameters(condition)
-    return end_temperature < start_temperature
-
-
-def _configure_comsol_retry_solver(model, condition: cond.ThermalCondition) -> None:
-    """Apply a more conservative solver configuration for retrying hard cases."""
-
-    _, _, _, smoothing_width = _condition_step_parameters(condition)
-    time_solver = model / "solutions" / "Solution 1" / "Time-Dependent Solver 1"
+    time_solver = solution / "Time-Dependent Solver 1"
     fully_coupled = time_solver / "Fully Coupled 1"
     direct = time_solver / "Direct"
+    plateau_step = _condition_plateau_time_step(condition)
+    smallest_solver_step = _condition_smallest_solver_step(condition)
 
-    time_solver.property("maxstepbdf", max(smoothing_width * _COMSOL_RETRY_MAXSTEP_FACTOR, _COMSOL_INITIAL_TIMESTEP))
+    time_solver.property(
+        "maxstepbdf",
+        min(
+            0.001,
+            max(
+                _COMSOL_INITIAL_TIMESTEP,
+                min(
+                    plateau_step / _COMSOL_RETRY_MAXSTEP_DIVISOR,
+                    smallest_solver_step * 10.0,
+                ),
+            ),
+        ),
+    )
+    time_solver.property("initialstepbdfactive", True)
+    time_solver.property("initialstepbdf", _COMSOL_INITIAL_TIMESTEP)
     fully_coupled.property("maxiter", _COMSOL_RETRY_MAXITER)
     fully_coupled.property("minstep", _COMSOL_RETRY_MINSTEP)
     fully_coupled.property("jtech", "onevery")
@@ -1252,24 +1870,42 @@ def _collect_comsol_problem_messages(model) -> list[str]:
     return problem_messages
 
 
-def _apply_mechanism_to_comsol(mechanism: MechanismView) -> None:
+def _remove_comsol_node(container, tag: str | None) -> None:
+    """Remove one COMSOL node if it still exists."""
+
+    if not tag:
+        return
+    try:
+        container.java.remove(tag)
+    except Exception:
+        pass
+
+
+def _apply_mechanism_to_comsol(model, mechanism: MechanismView) -> None:
     """Enable only the species and reactions present in the reduced mechanism."""
 
-    feature_nodes = _get_feature_nodes()
-    kept_species = {species.name for species in mechanism.species}
-    kept_reactions = {reaction.tag for reaction in mechanism.reactions}
+    global _cached_applied_mechanism
+    feature_nodes = _get_feature_nodes(model)
+    kept_species = frozenset(species.name for species in mechanism.species)
+    kept_reactions = frozenset(reaction.tag for reaction in mechanism.reactions)
 
-    for node in feature_nodes["species"].values():
-        node.toggle("enable")
-    for node in feature_nodes["reactions"].values():
-        node.toggle("enable")
+    if _cached_applied_mechanism is None:
+        previous_species = frozenset(feature_nodes["species"].keys())
+        previous_reactions = frozenset(feature_nodes["reactions"].keys())
+    else:
+        previous_species, previous_reactions = _cached_applied_mechanism
 
-    for tag, node in feature_nodes["reactions"].items():
-        if tag not in kept_reactions:
-            node.toggle("disable")
-    for tag, node in feature_nodes["species"].items():
-        if tag not in kept_species:
-            node.toggle("disable")
+    for tag in previous_species - kept_species:
+        feature_nodes["species"][tag].toggle("disable")
+    for tag in previous_reactions - kept_reactions:
+        feature_nodes["reactions"][tag].toggle("disable")
+
+    for tag in kept_species - previous_species:
+        feature_nodes["species"][tag].toggle("enable")
+    for tag in kept_reactions - previous_reactions:
+        feature_nodes["reactions"][tag].toggle("enable")
+
+    _cached_applied_mechanism = (kept_species, kept_reactions)
 
 
 def _get_comsol_dataset(model):
@@ -1299,7 +1935,7 @@ def _evaluate_comsol_globals(
     expressions: list[str],
     *,
     dataset,
-    outer_index: int,
+    outer_index: int | None = None,
 ) -> np.ndarray:
     """Evaluate global expressions directly through COMSOL's EvalGlobal feature.
 
@@ -1312,10 +1948,11 @@ def _evaluate_comsol_globals(
     evaluation = (model / _COMSOL_EVALUATIONS_PATH).create("EvalGlobal")
     try:
         evaluation.property("expr", expressions)
-        evaluation.property("data", dataset)
-        if JArray is not None and JInt is not None:
+        dataset_tag = dataset.tag() if hasattr(dataset, "tag") else dataset
+        evaluation.property("data", dataset_tag)
+        if outer_index is not None and JArray is not None and JInt is not None:
             evaluation.java.set("outersolnum", JArray(JInt)([int(outer_index)]))
-        else:
+        elif outer_index is not None:
             evaluation.property("outersolnum", [int(outer_index)])
 
         java = evaluation.java
@@ -1340,11 +1977,8 @@ def _evaluate_comsol_solution(
 
     dataset = _get_comsol_dataset(model)
     expressions = [f"re.c_{species.name}" for species in mechanism.species]
-    time_values = np.asarray(model.evaluate("t", dataset=dataset, outer=outer_index), dtype=float)
-    concentration_arrays = np.asarray(model.evaluate(expressions, dataset=dataset, outer=outer_index), dtype=float)
-    if concentration_arrays.ndim == 1:
-        concentration_arrays = concentration_arrays[:, np.newaxis]
-    concentration_arrays = concentration_arrays.T
+    time_values = _evaluate_comsol_globals(model, ["t"], dataset=dataset, outer_index=outer_index)[0]
+    concentration_arrays = _evaluate_comsol_globals(model, expressions, dataset=dataset, outer_index=outer_index)
     total_concentration = np.sum(concentration_arrays, axis=0)
     total_concentration[total_concentration <= 0.0] = 1.0
     mole_fractions = concentration_arrays / total_concentration
@@ -1359,16 +1993,15 @@ def _evaluate_comsol_solution(
 def _evaluate_current_comsol_solution(
     model,
     mechanism: MechanismView,
+    dataset=None,
 ) -> tuple[list[float], dict[str, list[float]]]:
     """Read the currently selected COMSOL solution without outer selection."""
 
-    dataset = _get_comsol_dataset(model)
+    if dataset is None:
+        dataset = _get_comsol_dataset(model)
     expressions = [f"re.c_{species.name}" for species in mechanism.species]
-    time_values = np.asarray(model.evaluate("t", dataset=dataset), dtype=float)
-    concentration_arrays = np.asarray(model.evaluate(expressions, dataset=dataset), dtype=float)
-    if concentration_arrays.ndim == 1:
-        concentration_arrays = concentration_arrays[:, np.newaxis]
-    concentration_arrays = concentration_arrays.T
+    time_values = _evaluate_comsol_globals(model, ["t"], dataset=dataset)[0]
+    concentration_arrays = _evaluate_comsol_globals(model, expressions, dataset=dataset)
     total_concentration = np.sum(concentration_arrays, axis=0)
     total_concentration[total_concentration <= 0.0] = 1.0
     mole_fractions = concentration_arrays / total_concentration
@@ -1383,7 +2016,9 @@ def _evaluate_current_comsol_solution(
 def _condition_signature(condition: cond.ThermalCondition) -> tuple[float, float, float]:
     """Return the embedded-study signature for one standard COMSOL condition."""
 
-    _, start_temperature, end_temperature, _ = _condition_step_parameters(condition)
+    times, temperatures = _condition_temperature_profile(condition)
+    start_temperature = temperatures[0]
+    end_temperature = temperatures[-1]
     return (_condition_xch4(condition), float(start_temperature), float(end_temperature))
 
 
@@ -1420,7 +2055,7 @@ def _open_fresh_comsol_model():
     if not MPH_AVAILABLE:
         raise RuntimeError("The mph library is required for COMSOL-backed solves.")
 
-    client = mph.start(cores=_comsol_cores)
+    client = _start_mph_client()
     model = client.load(str(_model_file))
     return client, model
 
@@ -1470,28 +2105,10 @@ def _run_mechanism_model_with_history(
     conditions: list[cond.ThermalCondition],
     mechanism: MechanismView,
 ) -> tuple[list[float], dict[str, list[float]]]:
-    """Run a GUI-order continuation prefix and return only the final condition."""
+    """Run several conditions sequentially and return the final one."""
 
-    client, model = _open_fresh_comsol_model()
-    try:
-        _apply_mechanism_to_comsol(mechanism)
-        _configure_comsol_temperature_function(model, conditions)
-        _configure_comsol_time_solver(model, conditions)
-        _configure_comsol_parametric_study(model, conditions)
-        _configure_comsol_result_plots(model)
-        model.solve(_COMSOL_STUDY_NAME)
-        return _evaluate_current_comsol_solution(model, mechanism)
-    except Exception as exc:
-        problem_messages = _collect_comsol_problem_messages(model)
-        detail = f"{type(exc).__name__}: {exc}"
-        if problem_messages:
-            detail = detail + " | COMSOL problems: " + " || ".join(problem_messages)
-        raise RuntimeError(f"COMSOL continuation solve failed: {detail}") from None
-    finally:
-        try:
-            client.remove(model)
-        except Exception:
-            pass
+    time_values, result_dicts = _run_comsol_mechanism(conditions, mechanism)
+    return time_values[-1], result_dicts[-1]
 
 
 def run_standard_model_with_history(conditions: list[cond.ThermalCondition]):
@@ -1518,19 +2135,9 @@ def _run_mechanism_models_via_continuation(
     conditions: list[cond.ThermalCondition],
     mechanism: MechanismView,
 ) -> tuple[list[list[float]], list[dict[str, list[float]]]]:
-    """Run all conditions by replaying the COMSOL continuation order."""
+    """Run all conditions independently in sequence on one COMSOL session."""
 
-    ordered_conditions = _standard_condition_order(conditions)
-    time_values = [[]] * len(conditions)
-    result_dicts = [{}] * len(conditions)
-
-    for position, (original_index, _) in enumerate(ordered_conditions, start=1):
-        replay_conditions = [condition for _, condition in ordered_conditions[:position]]
-        time_vals, result_dict = _run_mechanism_model_with_history(replay_conditions, mechanism)
-        time_values[original_index] = time_vals
-        result_dicts[original_index] = result_dict
-
-    return time_values, result_dicts
+    return _run_comsol_mechanism(conditions, mechanism)
 
 
 def run_standard_models_via_continuation(conditions: list[cond.ThermalCondition]):
@@ -1544,50 +2151,52 @@ def _run_comsol_mechanism(
     conditions: list[cond.ThermalCondition],
     mechanism: MechanismView,
 ) -> tuple[list[list[float]], list[dict[str, list[float]]]]:
-    """Run one COMSOL parametric sweep for all supplied conditions."""
+    """Run all supplied conditions with a persistent worker-local COMSOL runtime."""
 
     model = _get_comsol_model()
-    _apply_mechanism_to_comsol(mechanism)
-    _configure_comsol_temperature_function(model, conditions)
-    _configure_comsol_time_solver(model, conditions)
-    _configure_comsol_parametric_study(model, conditions)
-    _configure_comsol_result_plots(model)
-    try:
-        model.solve(_COMSOL_STUDY_NAME)
-    except Exception as exc:
-        retried = False
-        if len(conditions) == 1 and _is_stepdown_condition(conditions[0]):
-            retried = True
-            model.clear()
-            _configure_comsol_retry_solver(model, conditions[0])
-            try:
-                model.solve(_COMSOL_STUDY_NAME)
-            except Exception as retry_exc:
+    time_values: list[list[float]] = []
+    result_dicts: list[dict[str, list[float]]] = []
+
+    for condition in conditions:
+        _apply_mechanism_to_comsol(model, mechanism)
+        _configure_comsol_temperature_function(model, condition)
+        _configure_comsol_result_plots(model)
+        _apply_comsol_model_parameters(model, _condition_model_parameters(condition))
+        solve_plans = _condition_solver_segmentations(condition)
+        time_vals: list[float] | None = None
+        result_dict: dict[str, list[float]] | None = None
+
+        try:
+            runtime = _ensure_comsol_runtime(model, condition)
+            _clear_comsol_runtime_solution(runtime)
+            time_vals, result_dict = _run_comsol_runtime_segments(model, runtime, mechanism, solve_plans[0])
+        except Exception:
+            retry_exc: Exception | None = None
+            for solve_plan in solve_plans[1:] or solve_plans:
+                _apply_mechanism_to_comsol(model, mechanism)
+                _configure_comsol_temperature_function(model, condition)
+                _configure_comsol_result_plots(model)
+                _apply_comsol_model_parameters(model, _condition_model_parameters(condition))
+                runtime = _ensure_comsol_runtime(model, condition, recreate=True)
+                _configure_comsol_retry_solver(runtime.solution, condition)
+                _clear_comsol_runtime_solution(runtime)
+                try:
+                    time_vals, result_dict = _run_comsol_runtime_segments(model, runtime, mechanism, solve_plan)
+                    retry_exc = None
+                    break
+                except Exception as exc:
+                    retry_exc = exc
+
+            if retry_exc is not None:
                 problem_messages = _collect_comsol_problem_messages(model)
                 detail = f"{type(retry_exc).__name__}: {retry_exc}"
                 if problem_messages:
                     detail = detail + " | COMSOL problems: " + " || ".join(problem_messages)
                 raise RuntimeError(f"COMSOL solve failed after retry: {detail}") from None
-            else:
-                exc = None
 
-        if exc is None:
-            pass
-        else:
-            problem_messages = _collect_comsol_problem_messages(model)
-            detail = f"{type(exc).__name__}: {exc}"
-            if retried:
-                detail = "initial solve failed; retry not attempted cleanly | " + detail
-            if problem_messages:
-                detail = detail + " | COMSOL problems: " + " || ".join(problem_messages)
-            raise RuntimeError(f"COMSOL solve failed: {detail}") from None
-
-    time_values: list[list[float]] = []
-    result_dicts: list[dict[str, list[float]]] = []
-    for outer_index in range(1, len(conditions) + 1):
-        outer_time, outer_result = _evaluate_comsol_solution(model, mechanism, outer_index)
-        time_values.append(outer_time)
-        result_dicts.append(outer_result)
+        assert time_vals is not None and result_dict is not None
+        time_values.append(time_vals)
+        result_dicts.append(result_dict)
 
     return time_values, result_dicts
 

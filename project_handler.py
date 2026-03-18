@@ -15,7 +15,84 @@ project_identifier = "dummy"
 # 4. grouped reactions omitted
 # FINAL: reduced species and reactions
 
-def write_header(model_type: str, comparator_type: str, sensitivity: float, excluded_species: list[str], test_conditions_folder: str, original_species_list: list[str], original_reactions_list: list[str]):
+
+def _step_block_tags(step_number: int, *, progress: bool = False) -> tuple[str, str]:
+    """Return the start/end tags for one step block."""
+
+    if step_number not in {1, 2, 3, 4}:
+        raise ValueError("step_number must be 1, 2, 3, 4")
+    if progress:
+        return f"STEP {step_number} PROGRESS", f"END STEP {step_number} PROGRESS"
+    return f"STEP {step_number} ERROR", f"END STEP {step_number} ERROR"
+
+
+def _step_header_line(step_number: int) -> str:
+    """Return the column header for one step block."""
+
+    header_map = {
+        1: "SPECIES ERROR MAX_ERROR WEIGHT",
+        2: "SPECIES_LIST ERROR MAX_ERROR WEIGHT",
+        3: "REACTIONS ERROR MAX_ERROR WEIGHT",
+        4: "REACTION_LIST ERROR MAX_ERROR WEIGHT",
+    }
+    return header_map[step_number]
+
+
+def _replace_or_append_block(filepath: str, start_tag: str, end_tag: str, text_str: str) -> None:
+    """Replace an existing tagged block or append it if missing."""
+
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+
+        if start_tag in raw_text:
+            updated_text = re.sub(
+                rf"{start_tag}.*?{end_tag}\n\n",
+                text_str,
+                raw_text,
+                flags=re.DOTALL,
+            )
+        else:
+            updated_text = raw_text + text_str
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(updated_text)
+    else:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(text_str)
+
+
+def _remove_block(filepath: str, start_tag: str, end_tag: str) -> None:
+    """Remove a tagged block if it exists."""
+
+    if not os.path.exists(filepath):
+        return
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        raw_text = f.read()
+
+    if start_tag not in raw_text:
+        return
+
+    updated_text = re.sub(
+        rf"{start_tag}.*?{end_tag}\n\n",
+        "",
+        raw_text,
+        flags=re.DOTALL,
+    )
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(updated_text)
+
+def write_header(
+    model_type: str,
+    comparator_type: str,
+    sensitivity: float,
+    excluded_species: list[str],
+    test_conditions_folder: str,
+    original_species_list: list[str],
+    original_reactions_list: list[str],
+):
     text_str = ""
     text_str += f"HEADER {project_identifier}\n"
     text_str += f"Model type: {model_type}\n"
@@ -44,19 +121,8 @@ def write_header(model_type: str, comparator_type: str, sensitivity: float, excl
 
 
 def write_step_error(step_number: int, item_errors: condition_objects.ItemErrorList):
-    if step_number not in {1, 2, 3, 4}:
-        raise ValueError("step_number must be 1, 2, 3, 4")
-
-    header_map = {
-        1: "SPECIES ERROR MAX_ERROR WEIGHT",
-        2: "SPECIES_LIST ERROR MAX_ERROR WEIGHT",
-        3: "REACTIONS ERROR MAX_ERROR WEIGHT",
-        4: "REACTION_LIST ERROR MAX_ERROR WEIGHT",
-    }
-
-    start_tag = f"STEP {step_number} ERROR"
-    end_tag = f"END STEP {step_number} ERROR"
-    column_header = header_map[step_number]
+    start_tag, end_tag = _step_block_tags(step_number, progress=False)
+    column_header = _step_header_line(step_number)
 
     text_str = ""
     text_str += f"{start_tag}\n"
@@ -64,31 +130,44 @@ def write_step_error(step_number: int, item_errors: condition_objects.ItemErrorL
 
     for error in item_errors.items:
         item_serialized = json.dumps(error.item)
-        text_str += f"{item_serialized} {error.value} {error.max_value} {error.weight}\n"
+        line = f"{item_serialized} {error.value} {error.max_value} {error.weight}"
+        if getattr(error, "comment", ""):
+            line += f" {error.comment}"
+        text_str += line + "\n"
 
     text_str += f"{end_tag}\n\n"
 
     filepath = project_identifier + ".skn"
+    _replace_or_append_block(filepath, start_tag, end_tag, text_str)
+    clear_step_progress(step_number)
 
-    if os.path.exists(filepath):
-        with open(filepath, "r", encoding="utf-8") as f:
-            raw_text = f.read()
 
-        if start_tag in raw_text:
-            updated_text = re.sub(
-                rf"{start_tag}.*?{end_tag}\n\n",
-                text_str,
-                raw_text,
-                flags=re.DOTALL
-            )
-        else:
-            updated_text = raw_text + text_str
+def write_step_progress(step_number: int, item_errors: condition_objects.ItemErrorList):
+    """Checkpoint one in-progress step without marking it complete."""
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(updated_text)
-    else:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(text_str)
+    start_tag, end_tag = _step_block_tags(step_number, progress=True)
+    column_header = _step_header_line(step_number)
+
+    text_str = ""
+    text_str += f"{start_tag}\n"
+    text_str += f"{column_header}\n"
+
+    for error in item_errors.items:
+        item_serialized = json.dumps(error.item)
+        line = f"{item_serialized} {error.value} {error.max_value} {error.weight}"
+        if getattr(error, "comment", ""):
+            line += f" {error.comment}"
+        text_str += line + "\n"
+
+    text_str += f"{end_tag}\n\n"
+    _replace_or_append_block(project_identifier + ".skn", start_tag, end_tag, text_str)
+
+
+def clear_step_progress(step_number: int):
+    """Remove any saved in-progress checkpoint for one step."""
+
+    start_tag, end_tag = _step_block_tags(step_number, progress=True)
+    _remove_block(project_identifier + ".skn", start_tag, end_tag)
 
 
 def write_verdict(species_list : list[str], reaction_list : list[str]):
@@ -122,13 +201,13 @@ def where_are_we() -> str:
         raw_text = f.read()
     if "VERDICT" in raw_text:
         return "done"
-    elif "END STEP 4" in raw_text:
+    elif "END STEP 4 ERROR" in raw_text:
         return "step 4"
-    elif "END STEP 3" in raw_text:
+    elif "END STEP 3 ERROR" in raw_text:
         return "step 3"
-    elif "END STEP 2" in raw_text:
+    elif "END STEP 2 ERROR" in raw_text:
         return "step 2"
-    elif "END STEP 1" in raw_text:
+    elif "END STEP 1 ERROR" in raw_text:
         return "step 1"
     elif "END HEADER" in raw_text:
         return "initialized"
@@ -136,21 +215,11 @@ def where_are_we() -> str:
         return "nothing"
 
 
-def get_me_data(step: str) -> condition_objects.ItemErrorList:
+def _read_step_block(start_tag: str, end_tag: str) -> condition_objects.ItemErrorList:
+    """Read one tagged step block from the project file."""
+
     if not os.path.exists(project_identifier + '.skn'):
         raise FileNotFoundError("No project file found.")
-
-    step_map = {
-        "step 1": ("STEP 1 ERROR", "END STEP 1 ERROR"),
-        "step 2": ("STEP 2 ERROR", "END STEP 2 ERROR"),
-        "step 3": ("STEP 3 ERROR", "END STEP 3 ERROR"),
-        "step 4": ("STEP 4 ERROR", "END STEP 4 ERROR"),
-    }
-
-    if step not in step_map:
-        raise ValueError("Step must be 'step 1', 'step 2', 'step 3', or 'step 4'.")
-
-    start_tag, end_tag = step_map[step]
 
     with open(project_identifier + '.skn', "r", encoding="utf-8") as f:
         raw_text = f.read()
@@ -159,32 +228,66 @@ def get_me_data(step: str) -> condition_objects.ItemErrorList:
     match = re.search(pattern, raw_text, flags=re.DOTALL)
 
     if not match:
-        raise ValueError(f"No data found for {step}.")
+        raise ValueError(f"No data found for block {start_tag}.")
 
     block = match.group(1).strip().splitlines()
 
     item_error_list = condition_objects.ItemErrorList([])
 
     for line in block:
-        parts = line.strip().split(" ", 3)
-        if len(parts) != 4:
+        match = re.match(
+            r"^(.*) "
+            r"([+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|inf|nan)) "
+            r"([+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|inf|nan)) "
+            r"([+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|inf|nan))(?: (.*))?$",
+            line.strip(),
+            flags=re.IGNORECASE,
+        )
+        if not match:
             continue
 
-        item = json.loads(parts[0])
-        value = float(parts[1])
-        max_value = float(parts[2])
-        weight = float(parts[3])
+        item = json.loads(match.group(1))
+        value = float(match.group(2))
+        max_value = float(match.group(3))
+        weight = float(match.group(4))
+        comment = match.group(5) or ""
 
         error_obj = condition_objects.ItemError(
             item=item,
             value=value,
             max_value=max_value,
-            weight=weight
+            weight=weight,
+            comment=comment
         )
 
         item_error_list.items.append(error_obj)
 
     return item_error_list
+
+
+def get_me_data(step: str) -> condition_objects.ItemErrorList:
+    step_map = {
+        "step 1": _step_block_tags(1, progress=False),
+        "step 2": _step_block_tags(2, progress=False),
+        "step 3": _step_block_tags(3, progress=False),
+        "step 4": _step_block_tags(4, progress=False),
+    }
+
+    if step not in step_map:
+        raise ValueError("Step must be 'step 1', 'step 2', 'step 3', or 'step 4'.")
+
+    start_tag, end_tag = step_map[step]
+    return _read_step_block(start_tag, end_tag)
+
+
+def get_step_progress(step_number: int) -> condition_objects.ItemErrorList:
+    """Return the in-progress checkpoint for one step, if any."""
+
+    start_tag, end_tag = _step_block_tags(step_number, progress=True)
+    try:
+        return _read_step_block(start_tag, end_tag)
+    except (FileNotFoundError, ValueError):
+        return condition_objects.ItemErrorList([])
 
 def get_header_data():
     if not os.path.exists(project_identifier + '.skn'):

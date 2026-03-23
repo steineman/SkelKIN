@@ -1,4 +1,16 @@
-# This is it, your final scene begins
+"""Top-level SkelKIN driver.
+
+The currently supported automation path is:
+1. run the full reference mechanism on the supplied conditions
+2. evaluate step-1 single-species removals
+3. evaluate step-2 grouped-species removals
+
+Steps 3 and 4 from the original project structure are intentionally not wired
+into the active runtime here. For COMSOL models, this file is responsible for
+dispatching worker processes, collecting comparison errors, and writing the
+``.skn`` checkpoint file that records which species should be removed.
+"""
+
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
@@ -16,15 +28,17 @@ import time as timing
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 
-# user input, to be manipulated using GUI?
+# User-facing project configuration.
 project_name = "COMSOL_260312"
 input_folder = str(BASE_DIR / "COMSOL_260312_conditions")
-sensitivity_tolerance = 1e-3
+sensitivity_tolerance = 5e-3
 excluded_species = ['CH4', 'CO2','H','H2','CO','H2O','CH3','CH2','O2','O']
 model_type = "COMSOL_thermal"
 comparator_type = "max" # "lin", "log", "max"
+# Independent parallel standard runs are the intended default for the current
+# 8-condition COMSOL workflow on this machine.
 comsol_parallel_standard_runs = True
-COMSOL_REDUCTION_WORKER_CAP = 5
+COMSOL_REDUCTION_WORKER_CAP = 8
 COMSOL_MAX_CORES_PER_TASK = 8
 COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS = 7200
 TIMEOUT_ERROR_VALUE = float("1.0")
@@ -37,13 +51,19 @@ comsol_plasma_model = str(BASE_DIR / "plasma_model.mph")
 
 
 def _initialize_worker(comsol_cores_per_task: int = 1):
-    """Load the selected model once per worker process."""
+    """Load the selected backend once per worker process.
+
+    For COMSOL runs, each worker owns one persistent COMSOL session. That lets
+    the worker reuse the loaded model and temporary runtime objects across many
+    step-1 / step-2 candidates instead of paying the full COMSOL startup cost
+    for every single simulation.
+    """
 
     match model_type:
         case "ChemKIN":
             fromchemKIN.load_model_to_yaml(chemkin_kinet, chemkin_thermo)
         case "COMSOL_thermal":
-            fromcomsolRE.set_comsol_session_mode("client-server")
+            fromcomsolRE.set_comsol_session_mode(fromcomsolRE.preferred_comsol_session_mode())
             fromcomsolRE.set_comsol_cores(comsol_cores_per_task)
             fromcomsolRE.load_comsol_model(comsol_therm_model)
         case "COMSOL_plasma":
@@ -59,6 +79,10 @@ def _pool_configuration(total_jobs: int, *, default_cap: int | None = None) -> t
     - reserve at least one CPU outside the worker pool whenever possible
     - if there is enough headroom, assign multiple CPUs per COMSOL task
     - if there are more jobs than workers, the executor queue becomes the schedule
+
+    The COMSOL path uses this for both the standard reference run and the step-1
+    / step-2 reduction runs, so this function effectively controls how many
+    simultaneous COMSOL sessions we start and how many cores each session gets.
     """
 
     cpu_count = multiprocessing.cpu_count()
@@ -74,8 +98,6 @@ def _pool_configuration(total_jobs: int, *, default_cap: int | None = None) -> t
 
     if model_type == "COMSOL_thermal":
         raw_cores_per_task = min(COMSOL_MAX_CORES_PER_TASK, max(1, available_cpus // worker_count))
-        if raw_cores_per_task > 1 and raw_cores_per_task % 2 == 1:
-            raw_cores_per_task -= 1
         comsol_cores_per_task = max(1, raw_cores_per_task)
 
     return worker_count, comsol_cores_per_task
@@ -127,6 +149,56 @@ def _worker_identifier() -> int:
     if identity:
         return int(identity[0])
     return 0
+
+
+def _run_standard_models_sequential(conditions):
+    """Run the standard-model batch in one process, preserving COMSOL continuation."""
+
+    total_jobs = len(conditions)
+
+    if model_type == "COMSOL_thermal":
+        print(f"Running {total_jobs} simulations sequentially in one COMSOL worker session")
+        start_total = timing.time()
+        try:
+            results_time, results_dict = fromcomsolRE.run_standard_models(conditions)
+        except Exception as exc:
+            print(f"[ERROR] Standard COMSOL study failed: {exc}")
+            raise
+
+        for index in range(total_jobs):
+            elapsed = timing.time() - start_total
+            print(
+                f"[{index + 1}/{total_jobs}] "
+                f"Condition {index} finished "
+                f"(elapsed: {elapsed:.2f} s)"
+            )
+
+        print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
+        return results_time, results_dict
+
+    print(f"Running {total_jobs} simulations sequentially")
+    results_time = [[] for _ in range(total_jobs)]
+    results_dict = [{} for _ in range(total_jobs)]
+    start_total = timing.time()
+
+    for index, condition in enumerate(conditions):
+        try:
+            time_vals, result_dict = _run_standard_single_condition(condition)
+        except Exception as exc:
+            print(f"[ERROR] Standard simulation {index} failed: {exc}")
+            raise
+
+        results_time[index] = time_vals
+        results_dict[index] = result_dict
+        elapsed = timing.time() - start_total
+        print(
+            f"[{index + 1}/{total_jobs}] "
+            f"Condition {index} finished "
+            f"(elapsed: {elapsed:.2f} s)"
+        )
+
+    print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
+    return results_time, results_dict
 
 
 
@@ -507,24 +579,7 @@ def run_standard_models_parallel(conditions):
     total_jobs = len(conditions)
 
     if model_type == "COMSOL_thermal" and not comsol_parallel_standard_runs:
-        print(f"Running {total_jobs} simulations sequentially in one COMSOL worker session")
-        start_total = timing.time()
-        try:
-            results_time, results_dict = fromcomsolRE.run_standard_models(conditions)
-        except Exception as exc:
-            print(f"[ERROR] Standard COMSOL study failed: {exc}")
-            raise
-
-        for index in range(total_jobs):
-            elapsed = timing.time() - start_total
-            print(
-                f"[{index + 1}/{total_jobs}] "
-                f"Condition {index} finished "
-                f"(elapsed: {elapsed:.2f} s)"
-            )
-
-        print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
-        return results_time, results_dict
+        return _run_standard_models_sequential(conditions)
 
     worker_count, comsol_cores_per_task = _pool_configuration(total_jobs)
 
@@ -535,43 +590,53 @@ def run_standard_models_parallel(conditions):
     if total_jobs > worker_count:
         print(f"Scheduling {total_jobs - worker_count} simulations in the queue")
 
-    results_time = [[]] * total_jobs
-    results_dict = [{}] * total_jobs
+    results_time = [[] for _ in range(total_jobs)]
+    results_dict = [{} for _ in range(total_jobs)]
 
     start_total = timing.time()
 
-    with ProcessPoolExecutor(
-        max_workers=worker_count,
-        initializer=_initialize_worker,
-        initargs=(comsol_cores_per_task,),
-    ) as executor:
-        # Keep track of which future belongs to which index
-        futures = {
-            executor.submit(_run_standard_single_condition, cond): i
-            for i, cond in enumerate(conditions)
-        }
+    try:
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=_initialize_worker,
+            initargs=(comsol_cores_per_task,),
+        ) as executor:
+            # Keep track of which future belongs to which index
+            futures = {
+                executor.submit(_run_standard_single_condition, cond): i
+                for i, cond in enumerate(conditions)
+            }
 
-        completed = 0
+            completed = 0
 
-        for future in as_completed(futures):
-            index = futures[future]
+            for future in as_completed(futures):
+                index = futures[future]
 
-            try:
-                time_vals, result_dict = future.result()
-                results_time[index] = time_vals
-                results_dict[index] = result_dict
-            except Exception as e:
-                print(f"[ERROR] Simulation {index} failed: {e}")
-                raise
+                try:
+                    time_vals, result_dict = future.result()
+                    results_time[index] = time_vals
+                    results_dict[index] = result_dict
+                except Exception as e:
+                    print(f"[ERROR] Simulation {index} failed: {e}")
+                    raise
 
-            completed += 1
-            elapsed = timing.time() - start_total
+                completed += 1
+                elapsed = timing.time() - start_total
 
-            print(
-                f"[{completed}/{total_jobs}] "
-                f"Condition {index} finished "
-                f"(elapsed: {elapsed:.2f} s)"
-            )
+                print(
+                    f"[{completed}/{total_jobs}] "
+                    f"Condition {index} finished "
+                    f"(elapsed: {elapsed:.2f} s)"
+                )
+    except Exception as exc:
+        if model_type != "COMSOL_thermal":
+            raise
+        print(
+            "Parallel COMSOL standard runs failed. "
+            "Retrying sequentially in one COMSOL session for stability."
+        )
+        print(f"Original parallel failure: {exc}")
+        return _run_standard_models_sequential(conditions)
 
     print(f"All simulations finished in {timing.time() - start_total:.2f} seconds")
 
@@ -1013,8 +1078,13 @@ def _select_step2_omitted_species(
     return best_group
 
 
-def _export_step2_comsol_copy(grouped_species_error: condition_objects.ItemErrorList) -> None:
-    """Export the step-2 reduced COMSOL model copy for the current project."""
+def _print_step2_comsol_guidance(grouped_species_error: condition_objects.ItemErrorList) -> None:
+    """Print the step-2 omission guidance instead of editing the COMSOL model.
+
+    The automatic COMSOL export helper still exists in ``fromcomsolRE.py`` for
+    manual use, but the active workflow now stops at the ``.skn`` recommendation
+    so the user can decide how and when to disable species in COMSOL.
+    """
 
     if model_type != "COMSOL_thermal":
         return
@@ -1024,26 +1094,38 @@ def _export_step2_comsol_copy(grouped_species_error: condition_objects.ItemError
         return
 
     omitted_species = _select_step2_omitted_species(grouped_species_error, sensitivity_tolerance)
-    exported_model_path = fromcomsolRE.export_reduced_comsol_model(omitted_species)
+    project_file = Path(project_handler.project_identifier).name + ".skn"
     print(
-        f"Saved reduced COMSOL model copy with {len(omitted_species)} omitted species: "
-        f"{exported_model_path}"
+        f"For now, species are not automatically disabled in COMSOL - "
+        f"Check out the {project_file} file to see which species to remove"
     )
+    if omitted_species:
+        print(f"Step 2 suggests omitting {len(omitted_species)} species: {omitted_species}")
+    else:
+        print("Step 2 did not find any removable species within the current tolerance.")
+
+    # Automatic COMSOL export intentionally disabled for now.
+    # exported_model_path = fromcomsolRE.export_reduced_comsol_model(omitted_species)
+    # print(
+    #     f"Saved reduced COMSOL model copy with {len(omitted_species)} omitted species: "
+    #     f"{exported_model_path}"
+    # )
 
 if __name__ == "__main__":
 
-    # Get the project file ready, see what is up
+    # The ``.skn`` file is the only persisted state we actively rely on here.
+    # It tells us whether step 1 and/or step 2 have already been computed.
     project_handler.project_identifier = str(BASE_DIR / project_name)
 
-    status = project_handler.where_are_we() # "nothing", "initialized", "step 1", "step 2", "step 3", "step 4"
+    status = project_handler.where_are_we() # implemented pipeline: "nothing", "initialized", "step 1", "step 2"
 
     # Reinitialize the project OR initialize it
     all_species = []
     all_reactions = []
-    single_species_error = condition_objects.ItemErrorList
-    grouped_species_error = condition_objects.ItemErrorList
-    single_reaction_error = condition_objects.ItemErrorList
-    grouped_reaction_error = condition_objects.ItemErrorList
+    single_species_error = condition_objects.ItemErrorList([])
+    grouped_species_error = condition_objects.ItemErrorList([])
+    single_reaction_error = condition_objects.ItemErrorList([])
+    grouped_reaction_error = condition_objects.ItemErrorList([])
 
     match model_type:
         case "ChemKIN":
@@ -1051,7 +1133,7 @@ if __name__ == "__main__":
             all_species = fromchemKIN.get_species()
             all_reactions = fromchemKIN.get_reactions()
         case "COMSOL_thermal":
-            fromcomsolRE.set_comsol_session_mode("stand-alone")
+            fromcomsolRE.set_comsol_session_mode(fromcomsolRE.preferred_comsol_session_mode())
             fromcomsolRE.load_comsol_model(comsol_therm_model)
             all_species = fromcomsolRE.get_species()
             all_reactions = fromcomsolRE.get_reactions()
@@ -1060,7 +1142,8 @@ if __name__ == "__main__":
         case _:
             raise ValueError("This model type doesn't exist, sorry :'(")
 
-    # Get Error lists
+    # Normalize any legacy later-step states back onto the supported step-2
+    # pipeline so old project files can still be resumed safely.
     match status:
         case "nothing":
             project_handler.write_header(
@@ -1083,17 +1166,22 @@ if __name__ == "__main__":
             grouped_species_error = project_handler.get_me_data("step 2")
         case "step 3":
             check_project_similarity()
-            single_species_error =  project_handler.get_me_data("step 1")
+            single_species_error = project_handler.get_me_data("step 1")
             grouped_species_error = project_handler.get_me_data("step 2")
-            single_reaction_error = project_handler.get_me_data("step 3")
+            status = "step 2"
         case "step 4":
             check_project_similarity()
             single_species_error = project_handler.get_me_data("step 1")
             grouped_species_error = project_handler.get_me_data("step 2")
-            single_reaction_error = project_handler.get_me_data("step 3")
-            grouped_reaction_error = project_handler.get_me_data("step 4")
+            status = "step 2"
+        case "done":
+            check_project_similarity()
+            single_species_error = project_handler.get_me_data("step 1")
+            grouped_species_error = project_handler.get_me_data("step 2")
+            status = "step 2"
 
-    # Take conditions from folder :)
+    # Load all thermal conditions up front. The COMSOL backend reads these to
+    # build the temperature interpolation and choose solver segment boundaries.
     conditions_list = condition_objects.TestConditions([])
 
     for filename in sorted(os.listdir(input_folder)):
@@ -1101,10 +1189,13 @@ if __name__ == "__main__":
         new_condition = condition_objects.load_thermal_condition(str(condition_path))
         conditions_list.add_condition(new_condition)
 
-    # Run standard models
-
-    time_standard, dict_standard = run_standard_models_parallel(conditions_list.conditions)
-    standard_data = (time_standard, dict_standard)
+    # The reference full-mechanism dataset is only needed while we are still
+    # building step 1 or step 2. If those steps already exist in the ``.skn``,
+    # there is no need to rerun the expensive standard simulations.
+    standard_data = None
+    if status in {"nothing", "initialized", "step 1"}:
+        time_standard, dict_standard = run_standard_models_parallel(conditions_list.conditions)
+        standard_data = (time_standard, dict_standard)
 
     # ------------------------------------------------------------------------------------------------------- #
     list_species = list(set(all_species) - set(excluded_species))
@@ -1112,7 +1203,8 @@ if __name__ == "__main__":
 
 
     # --------------- STEP 1 -------------
-    if status == "step 1" or status == "step 2" or status == "step 3" or status == "step 4":
+    # Evaluate single-species omissions against the full standard dataset.
+    if status in {"step 1", "step 2"}:
         pass
     else:
         step1_progress = project_handler.get_step_progress(1)
@@ -1129,7 +1221,8 @@ if __name__ == "__main__":
 
 
     # --------------- STEP 2 -------------
-    if status == "step 2" or status == "step 3" or status == "step 4":
+    # Build cumulative species groups from the step-1 ranking and evaluate them.
+    if status == "step 2":
         pass
     else:
         # Group species from the previous error list
@@ -1148,4 +1241,4 @@ if __name__ == "__main__":
 
         project_handler.write_step_error(2, grouped_species_error)
 
-    _export_step2_comsol_copy(grouped_species_error)
+    _print_step2_comsol_guidance(grouped_species_error)

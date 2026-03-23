@@ -1,19 +1,23 @@
 """COMSOL Reaction Engineering backend for SkelKIN.
 
-This module mirrors the public API of ``fromchemKIN.py`` but uses a COMSOL
-Reaction Engineering ``.mph`` model as the mechanism source.
+This module mirrors the public API of ``fromchemKIN.py`` while keeping COMSOL
+as the actual transient solver for the thermal workflow.
 
-High-level flow:
-1. Read ``dmodel.xml`` from the ``.mph`` zip archive.
-2. Parse model parameters, analytic functions, species thermochemistry, and
-   reaction-rate expressions.
-3. Build a reduced mechanism view by removing species and reactions on demand.
-4. Integrate the resulting homogeneous kinetics problem for the supplied
-   temperature and pressure history.
+What this file is responsible for:
+1. Parse the ``.mph`` archive so SkelKIN can inspect the RE species/reactions
+   and build reduced mechanism views in Python.
+2. Start and manage live COMSOL sessions through ``mph``.
+3. Create a Python-owned temporary COMSOL study/solver/dataset runtime for each
+   worker process instead of depending on a study saved in the model file.
+4. Map each condition-file temperature profile to COMSOL's ``T_var(t)``
+   interpolation function.
+5. Run the full or reduced mechanism in COMSOL, retrying with more conservative
+   solver settings when a condition is hard.
+6. Extract concentration histories back into the SkelKIN comparison format.
 
-The solver is intentionally conservative: it uses stiff implicit methods,
-integrates each profile segment independently across imposed jumps, and rescales
-state variables to improve numerical conditioning.
+There is also a manual export helper in this file that can write a reduced
+``.mph`` copy with species/reactions disabled, but the main step-2 workflow no
+longer triggers that automatically.
 """
 
 from __future__ import annotations
@@ -42,11 +46,13 @@ import condition_objects as cond
 
 try:
     import mph
+    import jpype
     from jpype import JArray, JString
     from jpype.types import JInt
     MPH_AVAILABLE = True
 except ImportError:
     mph = None
+    jpype = None
     JArray = None
     JString = None
     JInt = None
@@ -58,6 +64,12 @@ try:
 except ImportError:
     njit = None
     NUMBA_AVAILABLE = False
+
+
+def preferred_comsol_session_mode() -> str:
+    """Return the most reliable MPh session mode for this COMSOL workflow."""
+
+    return "client-server"
 
 
 relative_tolerance = 1e-3
@@ -96,8 +108,11 @@ _cached_applied_mechanism: tuple[frozenset[str], frozenset[str]] | None = None
 _cached_runtime_model = None
 _cached_runtime = None
 _comsol_cores = 1
-_comsol_session_mode = "client-server"
+_comsol_session_mode = preferred_comsol_session_mode()
 
+# Names and tuning knobs for the temporary COMSOL runtime that Python owns.
+# These are the settings the worker-local runtime uses when it creates a fresh
+# transient study/solver sequence around a condition profile.
 _COMSOL_STUDY_NAME = "Parametric"
 _COMSOL_DATASET_NAME = "Parametric//Solution 1"
 _COMSOL_TEMPERATURE_FUNCTION_LABEL = "Temp"
@@ -129,10 +144,10 @@ _COMSOL_MODEL_PARAMETERS: dict[str, str | float | int] = {}
 def _prepare_comsol_runtime() -> None:
     """Prepare COMSOL runtime state before starting an ``mph`` session.
 
-    On Windows, `mph` can run COMSOL in stand-alone mode, which avoids the
-    separate webbridge server and its Equinox storage initialization. We also
-    pre-create the OSGi lock directory used by COMSOL so parallel workers do
-    not fail on first access.
+    In practice this is mostly Windows/parallel-worker hygiene:
+    - set the requested ``mph`` session mode
+    - pre-create COMSOL's Equinox lock directory when needed
+    - ensure APPDATA exists for COMSOL/MPh startup
     """
 
     if not MPH_AVAILABLE:
@@ -155,7 +170,15 @@ def _prepare_comsol_runtime() -> None:
 
 
 def _start_mph_client():
-    """Start an `mph` client with a few retries for transient COMSOL startup failures."""
+    """Start one ``mph`` client, retrying transient COMSOL startup failures.
+
+    The retry loop matters for the reduction workflow because many workers may
+    start COMSOL at nearly the same time.
+    """
+
+    existing_client = getattr(getattr(mph, "session", None), "client", None)
+    if existing_client is not None:
+        return existing_client
 
     last_error: Exception | None = None
     for attempt in range(1, _COMSOL_START_RETRIES + 1):
@@ -164,6 +187,11 @@ def _start_mph_client():
             return mph.start(cores=_comsol_cores)
         except Exception as exc:
             last_error = exc
+            existing_client = getattr(getattr(mph, "session", None), "client", None)
+            if existing_client is not None:
+                return existing_client
+            if jpype is not None and jpype.isJVMStarted():
+                break
             if attempt == _COMSOL_START_RETRIES:
                 break
             time.sleep(_COMSOL_START_RETRY_DELAY)
@@ -595,10 +623,12 @@ def set_comsol_cores(cores: int = 1):
             _cached_comsol_model = None
 
 
-def set_comsol_session_mode(mode: str = "client-server"):
+def set_comsol_session_mode(mode: str | None = None):
     """Set the MPh session mode used for future COMSOL starts."""
 
     global _comsol_session_mode, _cached_client, _cached_comsol_model, _cached_applied_mechanism, _cached_feature_nodes_model, _cached_feature_nodes
+    if mode is None:
+        mode = preferred_comsol_session_mode()
     if mode not in {"client-server", "stand-alone"}:
         raise ValueError("COMSOL session mode must be 'client-server' or 'stand-alone'.")
     if mode != _comsol_session_mode:
@@ -716,7 +746,12 @@ def _export_reduced_comsol_model_impl(
     session_mode: str,
     cores: int,
 ) -> Path:
-    """Save a reduced COMSOL copy inside one isolated Python process."""
+    """Save a reduced COMSOL copy inside one isolated Python process.
+
+    This helper is intentionally isolated because ``mph`` only allows one
+    client per Python process. It is meant for manual/explicit export, not for
+    the automatic step-2 flow.
+    """
 
     global _comsol_session_mode, _comsol_cores
 
@@ -757,6 +792,10 @@ def export_reduced_comsol_model(
 
     Reactions removed by those omitted species are also disabled so the saved
     Reaction Engineering model remains internally consistent.
+
+    The main driver currently leaves this as a manual step and only prints the
+    recommended species to remove. This function remains available for explicit
+    export workflows and debugging.
     """
 
     omitted_species = list(dict.fromkeys(omitted_species))
@@ -785,7 +824,7 @@ def export_reduced_comsol_model(
             str(_model_file),
             json.dumps(omitted_species),
             str(output_path),
-            "client-server",
+            _comsol_session_mode,
             str(_comsol_cores),
         ],
         cwd=str(module_dir),
@@ -796,6 +835,9 @@ def export_reduced_comsol_model(
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "Unknown export failure."
         raise RuntimeError(detail) from None
+
+    if not output_path.exists():
+        raise RuntimeError(f"COMSOL export reported success but no file was written: {output_path}") from None
 
     return output_path
 
@@ -1499,7 +1541,12 @@ def _ensure_comsol_temperature_function(model):
 
 
 def _configure_comsol_temperature_function(model, condition: cond.ThermalCondition) -> None:
-    """Map the condition-file temperature profile to COMSOL's ``T_var(t)``."""
+    """Map the condition-file temperature profile to COMSOL's ``T_var(t)``.
+
+    The condition file is treated as the source of truth. We rewrite the COMSOL
+    interpolation table for every condition instead of relying on a pre-saved
+    study-specific temperature function in the model.
+    """
 
     times, temperatures = _condition_temperature_profile(condition)
     function = _ensure_comsol_temperature_function(model)
@@ -1540,7 +1587,12 @@ def _configure_comsol_time_solver(solution, condition: cond.ThermalCondition) ->
 
 
 def _create_comsol_runtime(model, condition: cond.ThermalCondition) -> ComsolRuntime:
-    """Create the persistent worker-local study, solver, and dataset."""
+    """Create the persistent worker-local study, solver, and dataset.
+
+    Each worker keeps these nodes alive and reuses them across many candidates,
+    which is much cheaper and generally more robust than recreating the entire
+    COMSOL runtime for every step-1 / step-2 simulation.
+    """
 
     existing_solution_tags = {solution.tag() for solution in (model / "solutions").children()}
     study = (model / "studies").create(name=_COMSOL_TEMP_STUDY_LABEL)
@@ -1683,8 +1735,9 @@ def _condition_solver_segmentations(condition: cond.ThermalCondition) -> list[li
     """Return progressively more segmented solve plans for one condition.
 
     The first plan is a monolithic run. Later plans add continuation breaks
-    from the latest transition end backwards, which targets late-time failures
-    without over-constraining the earlier jump unless needed.
+    around the temperature-profile transitions. This lets COMSOL continue from
+    already converged early segments instead of forcing a single transient solve
+    through the whole profile when only one narrow jump is problematic.
     """
 
     solver_times = _condition_solver_times(condition)
@@ -1765,7 +1818,11 @@ def _run_comsol_runtime_segments(
     mechanism: MechanismView,
     segments: list[list[float]],
 ) -> tuple[list[float], dict[str, list[float]]]:
-    """Solve one condition by continuing across explicit time segments."""
+    """Solve one condition by continuing across explicit time segments.
+
+    The stitched result is returned as one continuous history so the rest of
+    SkelKIN can compare it exactly like a single-run simulation.
+    """
 
     if not segments:
         raise RuntimeError("Condition does not define any solver times.")
@@ -1882,7 +1939,11 @@ def _remove_comsol_node(container, tag: str | None) -> None:
 
 
 def _apply_mechanism_to_comsol(model, mechanism: MechanismView) -> None:
-    """Enable only the species and reactions present in the reduced mechanism."""
+    """Enable only the species and reactions present in the reduced mechanism.
+
+    This is the mechanism toggle that step-1 / step-2 workers use internally
+    before solving reduced candidates in COMSOL.
+    """
 
     global _cached_applied_mechanism
     feature_nodes = _get_feature_nodes(model)
@@ -1995,7 +2056,11 @@ def _evaluate_current_comsol_solution(
     mechanism: MechanismView,
     dataset=None,
 ) -> tuple[list[float], dict[str, list[float]]]:
-    """Read the currently selected COMSOL solution without outer selection."""
+    """Read the currently selected COMSOL solution without outer selection.
+
+    COMSOL returns concentrations; SkelKIN compares mole fractions, so this
+    helper normalizes the result before handing it back to ``main.py``.
+    """
 
     if dataset is None:
         dataset = _get_comsol_dataset(model)
@@ -2151,7 +2216,11 @@ def _run_comsol_mechanism(
     conditions: list[cond.ThermalCondition],
     mechanism: MechanismView,
 ) -> tuple[list[list[float]], list[dict[str, list[float]]]]:
-    """Run all supplied conditions with a persistent worker-local COMSOL runtime."""
+    """Run all supplied conditions with a persistent worker-local COMSOL runtime.
+
+    This is the central COMSOL execution path used by the standard model and by
+    the reduced step-1 / step-2 candidates.
+    """
 
     model = _get_comsol_model()
     time_values: list[list[float]] = []
@@ -2212,7 +2281,10 @@ def run_standard_models(conditions: list[cond.ThermalCondition]):
 
 
 def run_reduced_species_models(conditions: list[cond.ThermalCondition], omitted_species: list[str]):
-    """Run a species-reduced COMSOL sweep for all supplied conditions."""
+    """Run a species-reduced COMSOL sweep for all supplied conditions.
+
+    Step 1 passes a single omitted species. Step 2 passes grouped omissions.
+    """
 
     mechanism = _get_model().reduced(omitted_species=omitted_species)
     if len(conditions) > 1:

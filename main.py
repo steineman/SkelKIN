@@ -36,10 +36,10 @@ excluded_species = ['CH4', 'CO2','H','H2','CO','H2O','CH3','CH2','O2','O']
 model_type = "COMSOL_thermal"
 comparator_type = "max" # "lin", "log", "max"
 # Independent parallel standard runs are the intended default for the current
-# 8-condition COMSOL workflow on this machine.
+# condition COMSOL workflow on this machine. Choose number of CPUs depending on how many cores and simulations you have
 comsol_parallel_standard_runs = True
-COMSOL_REDUCTION_WORKER_CAP = 8
-COMSOL_MAX_CORES_PER_TASK = 8
+COMSOL_REDUCTION_WORKER_CAP = 5 # Max number of parallel COMSOL sessions for step-1 / step-2 runs. Set this to 1 to disable parallelism in the reduction steps
+COMSOL_MAX_CORES_PER_TASK = 6 # Max number of CPU cores to give to each COMSOL session. This is only a recommendation, the actual number of cores per session may be lower depending on how many workers are running simultaneously and how many total CPU cores are available. Typically, over 6 cores gives diminishing returns for COMSOL thermal models.
 COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS = 7200
 TIMEOUT_ERROR_VALUE = float("1.0")
 

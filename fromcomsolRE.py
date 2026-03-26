@@ -117,6 +117,7 @@ _COMSOL_STUDY_NAME = "Parametric"
 _COMSOL_DATASET_NAME = "Parametric//Solution 1"
 _COMSOL_TEMPERATURE_FUNCTION_LABEL = "Temp"
 _COMSOL_TEMPERATURE_FUNCTION_TAG = "step1"
+_COMSOL_INITIAL_VALUES_TAG = "inits1"
 _COMSOL_SWEEP_PATH = "studies/Parametric/All"
 _COMSOL_PHYSICS_PATH = "physics/Reaction Engineering"
 _COMSOL_EVALUATIONS_PATH = "evaluations"
@@ -137,6 +138,7 @@ _COMSOL_TRANSITION_MULTIPLIERS = (10.0, 100.0, 1000.0, 10000.0, 100000.0)
 _COMSOL_SEGMENTATION_EXTRA_POINTS = 3
 _COMSOL_START_RETRIES = 3
 _COMSOL_START_RETRY_DELAY = 2.0
+_COMSOL_MIN_SPECIES_FRACTION = 1e-12
 # Add fixed COMSOL parameters here if they should be pushed from Python into the model.
 _COMSOL_MODEL_PARAMETERS: dict[str, str | float | int] = {}
 
@@ -409,6 +411,9 @@ class ComsolModel:
         self.functions: dict[str, AnalyticFunction | callable] = {}
         self.species: list[SpeciesData] = []
         self.reactions: list[ReactionData] = []
+        self.initial_species: list[str] = []
+        self.initial_value_expressions: list[str] = []
+        self.default_initialized_species: list[str] = []
         self._load()
 
     def _load(self) -> None:
@@ -422,6 +427,17 @@ class ComsolModel:
         self.functions = self._load_functions(root)
         self.species = self._load_species(root)
         self.reactions = self._load_reactions(root)
+        (
+            self.initial_species,
+            self.initial_value_expressions,
+            self.default_initialized_species,
+        ) = self._load_initial_values(root)
+        active_species_names = {species.name for species in self.species}
+        self.default_initialized_species = [
+            species_name
+            for species_name in self.default_initialized_species
+            if species_name in active_species_names
+        ]
 
     def reduced(self, omitted_species: list[str] | None = None, omitted_reactions: list[str] | None = None) -> MechanismView:
         """Return a mechanism view after removing the requested entries."""
@@ -486,6 +502,8 @@ class ComsolModel:
     def _load_species(self, root: ET.Element) -> list[SpeciesData]:
         species: list[SpeciesData] = []
         for feature in root.findall(".//Physics[@tag='re']//PhysicsFeature[@op='SpeciesChem']"):
+            if not _feature_is_active(feature):
+                continue
             params = self._feature_params(feature)
             name = str(params.get("specLabel", feature.attrib.get("tag", "")))
             sequence_no = int(float(str(params.get("sSequenceNo", "0"))))
@@ -498,6 +516,8 @@ class ComsolModel:
     def _load_reactions(self, root: ET.Element) -> list[ReactionData]:
         reactions: list[ReactionData] = []
         for feature in root.findall(".//Physics[@tag='re']//PhysicsFeature[@op='ReactionChem']"):
+            if not _feature_is_active(feature):
+                continue
             params = self._feature_params(feature)
             equation = str(params["formula"]).replace("  ", " ").strip()
             reactants, products = _parse_equation(equation)
@@ -514,6 +534,42 @@ class ComsolModel:
         reactions.sort(key=lambda item: item.sequence_no)
         return reactions
 
+    def _load_initial_values(self, root: ET.Element) -> tuple[list[str], list[str], list[str]]:
+        """Read the RE initial-value vector stored in the COMSOL model.
+
+        The saved model is allowed to contain an old project-specific feed
+        parameterization. We do not use that vector directly at runtime, but it
+        is still useful as a model-defined hint for which species COMSOL expects
+        as "feed" species when a condition collapses to a single-species
+        endpoint.
+        """
+
+        feature = root.find(".//Physics[@tag='re']//PhysicsFeature[@tag='inits1']")
+        if feature is None:
+            return [], [], []
+
+        params = self._feature_params(feature)
+        raw_species = params.get("VolumetricSpecies", [])
+        raw_initial_values = params.get("initialValue", [])
+
+        species = list(raw_species) if isinstance(raw_species, list) else []
+        expressions = list(raw_initial_values) if isinstance(raw_initial_values, list) else []
+        if len(species) != len(expressions):
+            return species, expressions, []
+
+        env = _base_math_environment()
+        env.update(self.parameters)
+        default_initialized_species: list[str] = []
+        for species_name, expression in zip(species, expressions):
+            try:
+                value = float(CompiledExpression.from_raw(str(expression)).evaluate(dict(env)))
+            except Exception:
+                value = 0.0
+            if math.isfinite(value) and abs(value) > 0.0:
+                default_initialized_species.append(species_name)
+
+        return species, expressions, default_initialized_species
+
     @staticmethod
     def _feature_params(feature: ET.Element) -> dict[str, str | list[str]]:
         params: dict[str, str | list[str]] = {}
@@ -524,6 +580,13 @@ class ComsolModel:
                 continue
             params[name] = _decode_comsol_value(value)
         return params
+
+
+def _feature_is_active(feature: ET.Element) -> bool:
+    """Return whether a COMSOL XML feature is active in the saved model."""
+
+    flags = " ".join((node.text or "") for node in feature.findall("entityFlags"))
+    return "DISABLED" not in flags
 
 
 def _base_math_environment() -> dict[str, object]:
@@ -725,14 +788,14 @@ def _collect_feature_nodes(model) -> dict[str, dict[str, object]]:
 
 
 def get_species():
-    """Return the species names in model order."""
+    """Return the active COMSOL species names in model order."""
 
     model = _get_model()
     return [species.name for species in model.species]
 
 
 def get_reactions():
-    """Return reaction equations in model order."""
+    """Return the active COMSOL reaction equations in model order."""
 
     model = _get_model()
     return [reaction.equation for reaction in model.reactions]
@@ -1491,17 +1554,97 @@ def _condition_smallest_solver_step(condition: cond.ThermalCondition) -> float:
     return min(positive_steps)
 
 
-def _condition_xch4(condition: cond.ThermalCondition) -> float:
-    """Return the CH4 feed fraction used by the COMSOL model."""
+def _condition_initial_pressure_atm(condition: cond.ThermalCondition) -> float:
+    """Return the initial pressure, interpreted in atm like the condition files."""
 
-    return float(condition.species.get("CH4", 0.0))
+    if condition.pressure_profile and condition.pressure_profile != ([], []):
+        pressures = condition.get_pressure()[1]
+        if pressures:
+            return float(pressures[0])
+    return 1.0
+
+
+def _condition_species_fractions(
+    condition: cond.ThermalCondition,
+    target_species: list[str],
+    active_species: list[str],
+    trace_candidates: list[str] | None = None,
+) -> dict[str, float]:
+    """Return the condition species fractions projected onto the COMSOL model.
+
+    Unknown species with non-zero fractions are rejected explicitly so input
+    problems fail fast instead of silently producing the wrong mechanism setup.
+
+    The condition composition is preserved exactly in the general case. The only
+    regularization is for a strict single-species endpoint, where COMSOL has
+    proven fragile for this workflow. In that case we add a tiny trace amount of
+    another model-defined feed species so the runtime no longer depends on the
+    old hard-coded CH4/CO2 parameter path.
+    """
+
+    allowed = set(active_species)
+    unknown = [
+        name
+        for name, value in condition.species.items()
+        if name not in allowed and abs(float(value)) > 0.0
+    ]
+    if unknown:
+        raise ValueError(f"Condition contains species not active in the COMSOL RE model: {unknown}")
+
+    raw_fractions = {
+        species_name: float(condition.species.get(species_name, 0.0)) if species_name in allowed else 0.0
+        for species_name in target_species
+    }
+    total_fraction = sum(raw_fractions.values())
+    if total_fraction <= 0.0:
+        raise ValueError("Condition does not define any positive initial species fractions.")
+
+    normalized = {
+        species_name: value / total_fraction
+        for species_name, value in raw_fractions.items()
+    }
+    positive_species = [
+        species_name
+        for species_name, value in normalized.items()
+        if value > 0.0
+    ]
+    if len(positive_species) == 1:
+        dominant_species = positive_species[0]
+        trace_species = _fallback_trace_species(
+            dominant_species,
+            trace_candidates or active_species,
+        )
+        if trace_species is not None:
+            normalized[dominant_species] = max(0.0, 1.0 - _COMSOL_MIN_SPECIES_FRACTION)
+            normalized[trace_species] = normalized.get(trace_species, 0.0) + _COMSOL_MIN_SPECIES_FRACTION
+    return normalized
+
+
+def _fallback_trace_species(
+    dominant_species: str,
+    allowed_species: list[str],
+) -> str | None:
+    """Return a model-derived trace species for single-species endpoints.
+
+    The saved RE model already encodes which species were treated as initialized
+    feed species. We reuse that information as a generic fallback instead of
+    hard-coding CH4/CO2 in the runtime.
+    """
+
+    allowed = set(allowed_species)
+    for species_name in _get_model().default_initialized_species:
+        if species_name != dominant_species and species_name in allowed:
+            return species_name
+    for species_name in allowed_species:
+        if species_name != dominant_species:
+            return species_name
+    return None
 
 
 def _condition_model_parameters(condition: cond.ThermalCondition) -> dict[str, str | float | int]:
     """Return the Python-owned COMSOL parameter set for one condition."""
 
     parameters = dict(_COMSOL_MODEL_PARAMETERS)
-    parameters["xCH4"] = _condition_xch4(condition)
     parameters["T_g"] = _condition_initial_temperature(condition)
     return parameters
 
@@ -1511,6 +1654,63 @@ def _apply_comsol_model_parameters(model, parameters: dict[str, str | float | in
 
     for name, value in parameters.items():
         model.parameter(name, str(value))
+
+
+def _get_initial_values_node(model):
+    """Return the COMSOL RE initial-values feature node."""
+
+    physics = model / _COMSOL_PHYSICS_PATH
+    for child in physics.children():
+        if child.tag() == _COMSOL_INITIAL_VALUES_TAG:
+            return child
+    raise RuntimeError("COMSOL RE initial-values feature not found.")
+
+
+def _condition_initial_value_expressions(
+    model,
+    condition: cond.ThermalCondition,
+    mechanism: MechanismView | None = None,
+) -> list[str]:
+    """Build the full per-species initial concentration vector for COMSOL.
+
+    The condition files store mole fractions. COMSOL's RE initial-values node
+    stores concentrations, so we translate each species fraction to
+
+        x_i * P0 / (R_const * T_g)
+
+    using the initial pressure from the condition file and the initial gas
+    temperature parameter ``T_g``.
+    """
+
+    initial_values = _get_initial_values_node(model)
+    volumetric_species = list(initial_values.property("VolumetricSpecies"))
+    active_species = [species.name for species in mechanism.species] if mechanism is not None else list(volumetric_species)
+    trace_candidates = [species_name for species_name in volumetric_species if species_name in set(active_species)]
+    fractions = _condition_species_fractions(condition, volumetric_species, active_species, trace_candidates)
+    pressure_atm = _condition_initial_pressure_atm(condition)
+
+    expressions: list[str] = []
+    for species_name in volumetric_species:
+        fraction = fractions[species_name]
+        if fraction == 0.0:
+            expressions.append("0")
+        else:
+            expressions.append(f"({fraction:.17g})*({pressure_atm:.17g})[atm]/(R_const*T_g)")
+    return expressions
+
+
+def _configure_comsol_initial_values(
+    model,
+    condition: cond.ThermalCondition,
+    mechanism: MechanismView | None = None,
+) -> None:
+    """Write the condition-file initial species composition into COMSOL."""
+
+    initial_values = _get_initial_values_node(model)
+    expressions = _condition_initial_value_expressions(model, condition, mechanism)
+    initial_values.property("initialValue", expressions)
+    initial_values.property("F0", expressions)
+    initial_values.property("T0", "T_g")
 
 
 def _ensure_comsol_temperature_function(model):
@@ -1950,21 +2150,17 @@ def _apply_mechanism_to_comsol(model, mechanism: MechanismView) -> None:
     kept_species = frozenset(species.name for species in mechanism.species)
     kept_reactions = frozenset(reaction.tag for reaction in mechanism.reactions)
 
-    if _cached_applied_mechanism is None:
-        previous_species = frozenset(feature_nodes["species"].keys())
-        previous_reactions = frozenset(feature_nodes["reactions"].keys())
-    else:
-        previous_species, previous_reactions = _cached_applied_mechanism
-
-    for tag in previous_species - kept_species:
-        feature_nodes["species"][tag].toggle("disable")
-    for tag in previous_reactions - kept_reactions:
-        feature_nodes["reactions"][tag].toggle("disable")
-
-    for tag in kept_species - previous_species:
-        feature_nodes["species"][tag].toggle("enable")
-    for tag in kept_reactions - previous_reactions:
-        feature_nodes["reactions"][tag].toggle("enable")
+    # Always drive the COMSOL RE nodes to the exact requested mechanism state.
+    #
+    # Some `.mph` files ship with species or reactions already inactive by
+    # default. A diff-only update against "all known tags" can therefore leave a
+    # species disabled even though the reduced mechanism wants to keep it. That
+    # was the main cause of recent step-1 / step-2 regressions: grouped reduced
+    # runs were sometimes evaluated on a partially disabled mechanism.
+    for tag, node in feature_nodes["species"].items():
+        node.toggle("enable" if tag in kept_species else "disable")
+    for tag, node in feature_nodes["reactions"].items():
+        node.toggle("enable" if tag in kept_reactions else "disable")
 
     _cached_applied_mechanism = (kept_species, kept_reactions)
 
@@ -2081,10 +2277,7 @@ def _evaluate_current_comsol_solution(
 def _condition_signature(condition: cond.ThermalCondition) -> tuple[float, float, float]:
     """Return the embedded-study signature for one standard COMSOL condition."""
 
-    times, temperatures = _condition_temperature_profile(condition)
-    start_temperature = temperatures[0]
-    end_temperature = temperatures[-1]
-    return (_condition_xch4(condition), float(start_temperature), float(end_temperature))
+    raise NotImplementedError("Embedded-study helpers are not used in the current Python-owned COMSOL workflow.")
 
 
 def _parse_study_values(value: str) -> list[float]:
@@ -2096,22 +2289,13 @@ def _parse_study_values(value: str) -> list[float]:
 def _saved_study_signatures(model) -> list[tuple[float, float, float]]:
     """Read the saved COMSOL standard sweep from the model."""
 
-    study = (model / _COMSOL_SWEEP_PATH).java
-    parameter_names = list(study.getStringArray("pname"))
-    parameter_lists = {
-        name: _parse_study_values(value)
-        for name, value in zip(parameter_names, list(study.getStringArray("plistarr")))
-    }
-    if not {"xCH4", "Tstart", "Tend"}.issubset(parameter_lists):
-        raise RuntimeError("Embedded COMSOL study is missing xCH4/Tstart/Tend.")
-    return list(zip(parameter_lists["xCH4"], parameter_lists["Tstart"], parameter_lists["Tend"]))
+    raise NotImplementedError("Embedded-study helpers are not used in the current Python-owned COMSOL workflow.")
 
 
 def _can_use_embedded_standard_study(model, conditions: list[cond.ThermalCondition]) -> bool:
     """Return whether the requested conditions are covered by the embedded study."""
 
-    saved = set(_saved_study_signatures(model))
-    return all(_condition_signature(condition) in saved for condition in conditions)
+    raise NotImplementedError("Embedded-study helpers are not used in the current Python-owned COMSOL workflow.")
 
 
 def _open_fresh_comsol_model():
@@ -2128,42 +2312,7 @@ def _open_fresh_comsol_model():
 def run_embedded_standard_models(conditions: list[cond.ThermalCondition]):
     """Run the saved COMSOL study unchanged and extract the requested subset."""
 
-    mechanism = _get_model().reduced()
-    client, model = _open_fresh_comsol_model()
-    try:
-        if not _can_use_embedded_standard_study(model, conditions):
-            raise RuntimeError("Requested conditions are not covered by the embedded COMSOL study.")
-
-        signature_to_outer = {
-            signature: outer_index
-            for outer_index, signature in enumerate(_saved_study_signatures(model), start=1)
-        }
-    finally:
-        try:
-            client.remove(model)
-        except Exception:
-            pass
-
-    requested = []
-    for condition in conditions:
-        signature = _condition_signature(condition)
-        outer_index = signature_to_outer[signature]
-        outer_client, outer_model = _open_fresh_comsol_model()
-        try:
-            _configure_comsol_result_plots(outer_model)
-            dataset = _get_comsol_dataset(outer_model)
-            if not _dataset_has_solution(outer_model, dataset):
-                outer_model.solve(_COMSOL_STUDY_NAME)
-            requested.append(_evaluate_comsol_solution(outer_model, mechanism, outer_index))
-        finally:
-            try:
-                outer_client.remove(outer_model)
-            except Exception:
-                pass
-
-    time_values = [times for times, _ in requested]
-    result_dicts = [result_dict for _, result_dict in requested]
-    return time_values, result_dicts
+    raise NotImplementedError("Embedded-study helpers are not used in the current Python-owned COMSOL workflow.")
 
 
 def _run_mechanism_model_with_history(
@@ -2186,14 +2335,7 @@ def run_standard_model_with_history(conditions: list[cond.ThermalCondition]):
 def _standard_condition_order(conditions: list[cond.ThermalCondition]) -> list[tuple[int, cond.ThermalCondition]]:
     """Return the COMSOL GUI sweep order for the supplied conditions."""
 
-    return sorted(
-        list(enumerate(conditions)),
-        key=lambda item: (
-            0 if item[1].get_temperature()[1][0] < item[1].get_temperature()[1][-1] else 1,
-            _condition_xch4(item[1]),
-            item[0],
-        ),
-    )
+    return list(enumerate(conditions))
 
 
 def _run_mechanism_models_via_continuation(
@@ -2231,6 +2373,7 @@ def _run_comsol_mechanism(
         _configure_comsol_temperature_function(model, condition)
         _configure_comsol_result_plots(model)
         _apply_comsol_model_parameters(model, _condition_model_parameters(condition))
+        _configure_comsol_initial_values(model, condition, mechanism)
         solve_plans = _condition_solver_segmentations(condition)
         time_vals: list[float] | None = None
         result_dict: dict[str, list[float]] | None = None
@@ -2246,6 +2389,7 @@ def _run_comsol_mechanism(
                 _configure_comsol_temperature_function(model, condition)
                 _configure_comsol_result_plots(model)
                 _apply_comsol_model_parameters(model, _condition_model_parameters(condition))
+                _configure_comsol_initial_values(model, condition, mechanism)
                 runtime = _ensure_comsol_runtime(model, condition, recreate=True)
                 _configure_comsol_retry_solver(runtime.solution, condition)
                 _clear_comsol_runtime_solution(runtime)

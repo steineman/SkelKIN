@@ -108,6 +108,7 @@ _cached_applied_mechanism: tuple[frozenset[str], frozenset[str]] | None = None
 _cached_runtime_model = None
 _cached_runtime = None
 _comsol_cores = 1
+_comsol_memory_limit_bytes: int | None = None
 _comsol_session_mode = preferred_comsol_session_mode()
 
 # Names and tuning knobs for the temporary COMSOL runtime that Python owns.
@@ -154,6 +155,16 @@ def _prepare_comsol_runtime() -> None:
 
     if not MPH_AVAILABLE:
         return
+
+    # Do not force JVM heap sizes through global Java environment variables.
+    # COMSOL already ships launcher-specific `.ini` files (for example
+    # `comsolmphserver.ini`) that define its own Java memory settings. Using
+    # `_JAVA_OPTIONS` / `JAVA_TOOL_OPTIONS` here overrides those defaults for
+    # every Java process spawned by MPh, which caused noisy "Picked up ..."
+    # banners and paging-file crashes on Windows.
+    os.environ.pop("_JAVA_OPTIONS", None)
+    os.environ.pop("JAVA_TOOL_OPTIONS", None)
+    os.environ.pop("JDK_JAVA_OPTIONS", None)
 
     mph.option("session", _comsol_session_mode)
 
@@ -684,6 +695,21 @@ def set_comsol_cores(cores: int = 1):
                 pass
             _cached_client = None
             _cached_comsol_model = None
+
+
+def set_comsol_memory_limit_bytes(limit_bytes: int | None = None):
+    """Remember the scheduler RAM budget associated with the COMSOL pool.
+
+    This value is intentionally not pushed into `_JAVA_OPTIONS` or
+    `JAVA_TOOL_OPTIONS`. COMSOL's own launchers already manage JVM heap sizing,
+    and overriding that globally proved unstable for this workflow.
+    """
+
+    global _comsol_memory_limit_bytes
+    if limit_bytes is None:
+        _comsol_memory_limit_bytes = None
+        return
+    _comsol_memory_limit_bytes = max(1, int(limit_bytes))
 
 
 def set_comsol_session_mode(mode: str | None = None):
@@ -1666,6 +1692,18 @@ def _get_initial_values_node(model):
     raise RuntimeError("COMSOL RE initial-values feature not found.")
 
 
+def _full_volumetric_species_registry() -> list[str]:
+    """Return the full saved species registry for COMSOL initial values.
+
+    COMSOL can silently shrink ``Initial Values 1 -> VolumetricSpecies`` when a
+    reduced candidate disables part of the RE interface. SkelKIN still needs the
+    full registry there so variables such as ``re.c0_<species>`` remain defined
+    even for omitted species that are held at zero concentration.
+    """
+
+    return [species.name for species in _get_model().species]
+
+
 def _condition_initial_value_expressions(
     model,
     condition: cond.ThermalCondition,
@@ -1683,7 +1721,8 @@ def _condition_initial_value_expressions(
     """
 
     initial_values = _get_initial_values_node(model)
-    volumetric_species = list(initial_values.property("VolumetricSpecies"))
+    volumetric_species = _full_volumetric_species_registry()
+    initial_values.property("VolumetricSpecies", volumetric_species)
     active_species = [species.name for species in mechanism.species] if mechanism is not None else list(volumetric_species)
     trace_candidates = [species_name for species_name in volumetric_species if species_name in set(active_species)]
     fractions = _condition_species_fractions(condition, volumetric_species, active_species, trace_candidates)
@@ -1707,6 +1746,8 @@ def _configure_comsol_initial_values(
     """Write the condition-file initial species composition into COMSOL."""
 
     initial_values = _get_initial_values_node(model)
+    initial_values.property("VolumetricSpecies", _full_volumetric_species_registry())
+    initial_values.property("DisabledSpecies", [])
     expressions = _condition_initial_value_expressions(model, condition, mechanism)
     initial_values.property("initialValue", expressions)
     initial_values.property("F0", expressions)
@@ -2063,6 +2104,19 @@ def _configure_comsol_result_plots(model) -> None:
         pass
 
     try:
+        for plot_group in (model / "plots").children():
+            try:
+                plot_group.java.active(False)
+            except Exception:
+                pass
+            try:
+                plot_group.property("progressactive", False)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
         plot_group = model / _COMSOL_CONCENTRATION_PLOT_PATH
         global_plot = plot_group / "Global 1"
     except Exception:
@@ -2075,6 +2129,12 @@ def _configure_comsol_result_plots(model) -> None:
 
     plot_group.property("progressactive", False)
     plot_group.property("showlegends", "off")
+    global_plot.property("autoexpr", False)
+    global_plot.property("autodescr", False)
+    global_plot.property("autounit", False)
+    global_plot.property("expr", ["1"])
+    global_plot.property("descr", ["Disabled during SkelKIN runtime"])
+    global_plot.property("unit", ["1"])
     global_plot.property("xdata", "expr")
     global_plot.property("xdataexpr", "t")
     global_plot.property("xdatadescractive", True)
@@ -2150,15 +2210,26 @@ def _apply_mechanism_to_comsol(model, mechanism: MechanismView) -> None:
     kept_species = frozenset(species.name for species in mechanism.species)
     kept_reactions = frozenset(reaction.tag for reaction in mechanism.reactions)
 
-    # Always drive the COMSOL RE nodes to the exact requested mechanism state.
+    # Always drive the COMSOL RE nodes to the exact requested reaction state.
     #
-    # Some `.mph` files ship with species or reactions already inactive by
-    # default. A diff-only update against "all known tags" can therefore leave a
-    # species disabled even though the reduced mechanism wants to keep it. That
-    # was the main cause of recent step-1 / step-2 regressions: grouped reduced
-    # runs were sometimes evaluated on a partially disabled mechanism.
+    # Species are intentionally kept enabled even when they are "omitted" from
+    # a reduced candidate. The rebuilt GRI-based COMSOL model uses explicit
+    # concentration references such as ``re.c_CH4`` inside third-body/falloff
+    # rate expressions. If a species node is disabled, those variables vanish
+    # from COMSOL and otherwise valid reduced mechanisms fail before solving.
+    #
+    # Keeping the species nodes enabled is still consistent with the reduction
+    # logic because:
+    # - all reactions involving the omitted species are disabled below
+    # - omitted species receive zero initial concentration from
+    #   ``_condition_initial_value_expressions``
+    # - result extraction only evaluates the species present in
+    #   ``mechanism.species``
+    #
+    # In practice that means omitted species remain as zero-valued placeholder
+    # state variables so COMSOL's pressure-dependent expressions stay defined.
     for tag, node in feature_nodes["species"].items():
-        node.toggle("enable" if tag in kept_species else "disable")
+        node.toggle("enable")
     for tag, node in feature_nodes["reactions"].items():
         node.toggle("enable" if tag in kept_reactions else "disable")
 

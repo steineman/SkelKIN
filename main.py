@@ -13,6 +13,7 @@ dispatching worker processes, collecting comparison errors, and writing the
 
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import ctypes
 import multiprocessing
 from pathlib import Path
 import queue
@@ -29,28 +30,73 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 
 # User-facing project configuration.
-project_name = "COMSOL_260312"
+project_name = "COMSOL_260312_gri30_noN_formula"
 input_folder = str(BASE_DIR / "COMSOL_260312_conditions")
-sensitivity_tolerance = 5e-3
+sensitivity_tolerance = 0.005
 excluded_species = ['CH4', 'CO2','H','H2','CO','H2O','CH3','CH2','O2','O']
 model_type = "COMSOL_thermal"
-comparator_type = "max" # "lin", "log", "max"
-# Independent parallel standard runs are the intended default for the current
-# condition COMSOL workflow on this machine. Choose number of CPUs depending on how many cores and simulations you have
+comparator_type = "log" # "lin", "log", "max"
+reset_incomplete_project_on_start = True
+# The neutral GRI-Mech COMSOL model is noticeably stiffer than the earlier
+# CRECK-style test models, so keep the reduction pool conservative. For the
+# reference batch, independent condition runs are safer than relying on a
+# single long continuation sweep.
 comsol_parallel_standard_runs = True
-COMSOL_REDUCTION_WORKER_CAP = 5 # Max number of parallel COMSOL sessions for step-1 / step-2 runs. Set this to 1 to disable parallelism in the reduction steps
-COMSOL_MAX_CORES_PER_TASK = 6 # Max number of CPU cores to give to each COMSOL session. This is only a recommendation, the actual number of cores per session may be lower depending on how many workers are running simultaneously and how many total CPU cores are available. Typically, over 6 cores gives diminishing returns for COMSOL thermal models.
-COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS = 7200
+COMSOL_REDUCTION_WORKER_CAP = 5 # Max number of parallel COMSOL sessions for step-1 / step-2 runs.
+COMSOL_MAX_SIMULTANEOUS_RUNS = 5 # Hard cap requested by the user: at most 5 concurrent simulations.
+COMSOL_MAX_CORES_PER_TASK = 4 # Fixed core count per COMSOL session. Worker scheduling no longer divides CPUs dynamically.
+COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS = 14400
 TIMEOUT_ERROR_VALUE = float("1.0")
 
 # Optional files, depending on model choice
-chemkin_kinet = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_pyro_COMSOL.CKI.txt")
-chemkin_thermo = str(BASE_DIR / "CRECK_2003_TOT_HT_SOOT_therm_pyro_COMSOL.CKT.txt")
-comsol_therm_model = str(BASE_DIR / "0D_260312.mph")
+# The active workflow here is COMSOL-backed, so the Chemkin paths are unused.
+chemkin_kinet = ""
+chemkin_thermo = ""
+comsol_therm_model = str(BASE_DIR / "0D_260312_gri30_noN_formula.mph")
 comsol_plasma_model = str(BASE_DIR / "plasma_model.mph")
 
 
-def _initialize_worker(comsol_cores_per_task: int = 1):
+def _total_system_ram_bytes() -> int | None:
+    """Return total physical RAM in bytes when it can be detected."""
+
+    if sys.platform.startswith("win"):
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+
+        status = MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys)
+        return None
+
+    if hasattr(os, "sysconf"):
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        if isinstance(page_size, int) and isinstance(phys_pages, int) and page_size > 0 and phys_pages > 0:
+            return int(page_size * phys_pages)
+
+    return None
+
+
+def _format_ram_gb(ram_bytes: int | None) -> str:
+    """Return a compact GiB string for logging."""
+
+    if ram_bytes is None or ram_bytes <= 0:
+        return "unknown RAM"
+    return f"{ram_bytes / (1024 ** 3):.2f} GiB"
+
+
+def _initialize_worker(comsol_cores_per_task: int = 1, comsol_memory_limit_bytes: int | None = None):
     """Load the selected backend once per worker process.
 
     For COMSOL runs, each worker owns one persistent COMSOL session. That lets
@@ -65,6 +111,7 @@ def _initialize_worker(comsol_cores_per_task: int = 1):
         case "COMSOL_thermal":
             fromcomsolRE.set_comsol_session_mode(fromcomsolRE.preferred_comsol_session_mode())
             fromcomsolRE.set_comsol_cores(comsol_cores_per_task)
+            fromcomsolRE.set_comsol_memory_limit_bytes(comsol_memory_limit_bytes)
             fromcomsolRE.load_comsol_model(comsol_therm_model)
         case "COMSOL_plasma":
             raise NotImplementedError("I didnt implement COMSOL plasma yet lole")
@@ -72,35 +119,28 @@ def _initialize_worker(comsol_cores_per_task: int = 1):
             raise ValueError(f"{model_type} doesn't exist")
 
 
-def _pool_configuration(total_jobs: int, *, default_cap: int | None = None) -> tuple[int, int]:
-    """Choose worker count and per-task CPU allocation.
+def _pool_configuration(total_jobs: int, *, default_cap: int | None = None) -> tuple[int, int, int | None]:
+    """Choose a simple worker plan for the current batch.
 
-    Rules:
-    - reserve at least one CPU outside the worker pool whenever possible
-    - if there is enough headroom, assign multiple CPUs per COMSOL task
-    - if there are more jobs than workers, the executor queue becomes the schedule
+    The requested behavior is:
+    - at most 5 concurrent simulations
+    - the active COMSOL pool tracks a total RAM budget of ``total_ram // max_worker``
 
-    The COMSOL path uses this for both the standard reference run and the step-1
-    / step-2 reduction runs, so this function effectively controls how many
-    simultaneous COMSOL sessions we start and how many cores each session gets.
+    CPU splitting is intentionally simple here as well: COMSOL workers use the
+    configured fixed core count instead of dynamic per-batch division. COMSOL
+    still manages its own actual JVM heap sizing via its launcher settings.
     """
 
-    cpu_count = multiprocessing.cpu_count()
-    reserved_cpus = 1 if cpu_count > 1 else 0
-    available_cpus = max(1, cpu_count - reserved_cpus)
-    cap = available_cpus if default_cap is None else min(available_cpus, default_cap)
+    max_worker = COMSOL_MAX_SIMULTANEOUS_RUNS if default_cap is None else min(default_cap, COMSOL_MAX_SIMULTANEOUS_RUNS)
+    worker_count = max(1, min(total_jobs, max_worker))
+    comsol_cores_per_task = COMSOL_MAX_CORES_PER_TASK if model_type == "COMSOL_thermal" else 1
 
-    if model_type == "COMSOL_thermal":
-        cap = min(cap, 10)
+    total_ram_bytes = _total_system_ram_bytes() if model_type == "COMSOL_thermal" else None
+    comsol_memory_limit_bytes = None
+    if total_ram_bytes is not None:
+        comsol_memory_limit_bytes = max(1, total_ram_bytes // max_worker)
 
-    worker_count = max(1, min(total_jobs, cap))
-    comsol_cores_per_task = 1
-
-    if model_type == "COMSOL_thermal":
-        raw_cores_per_task = min(COMSOL_MAX_CORES_PER_TASK, max(1, available_cpus // worker_count))
-        comsol_cores_per_task = max(1, raw_cores_per_task)
-
-    return worker_count, comsol_cores_per_task
+    return worker_count, comsol_cores_per_task, comsol_memory_limit_bytes
 # Code start, good luck
 def check_project_similarity():
     # check if it's the same project
@@ -310,6 +350,34 @@ def _is_nonremovable_species_error(item_error: condition_objects.ItemError) -> b
     )
 
 
+def _checkpoint_should_reset_on_start() -> bool:
+    """Return whether a saved checkpoint is clearly stale and should be reset.
+
+    The goal is to keep normal resume behavior intact while still auto-clearing
+    obviously bad checkpoints from earlier incompatible runs. In practice, we
+    only reset when the project is incomplete *and* step 1 contains nothing but
+    solver/time-out failures, which is the signature of the earlier broken
+    COMSOL reduction state.
+    """
+
+    if not reset_incomplete_project_on_start:
+        return False
+
+    current_status = project_handler.where_are_we()
+    if current_status == "done":
+        return False
+
+    try:
+        step1_errors = project_handler.get_me_data("step 1")
+    except Exception:
+        return current_status in {"initialized"}
+
+    if not step1_errors.items:
+        return current_status in {"initialized"}
+
+    return all(_is_nonremovable_species_error(item) for item in step1_errors.items)
+
+
 def _reduced_species_error_worker_all_conditions_inner(
     result_queue,
     conditions,
@@ -318,11 +386,12 @@ def _reduced_species_error_worker_all_conditions_inner(
     standard_dicts,
     comparator_mode,
     comsol_cores_per_task,
+    comsol_memory_limit_bytes,
 ):
     """Run one COMSOL reduced-species candidate in an isolated child process."""
 
     try:
-        _initialize_worker(comsol_cores_per_task)
+        _initialize_worker(comsol_cores_per_task, comsol_memory_limit_bytes)
         time_vals_list, result_dicts = fromcomsolRE.run_reduced_species_models(
             conditions,
             [omitted_species] if isinstance(omitted_species, str) else omitted_species,
@@ -374,6 +443,7 @@ def _reduced_species_error_worker_all_conditions(args):
         standard_dicts,
         comparator_mode,
         comsol_cores_per_task,
+        comsol_memory_limit_bytes,
         timeout_seconds,
     ) = args
     worker_id = _worker_identifier()
@@ -393,6 +463,7 @@ def _reduced_species_error_worker_all_conditions(args):
                     standard_dicts,
                     comparator_mode,
                     comsol_cores_per_task,
+                    comsol_memory_limit_bytes,
                 ),
             )
             child.start()
@@ -581,11 +652,15 @@ def run_standard_models_parallel(conditions):
     if model_type == "COMSOL_thermal" and not comsol_parallel_standard_runs:
         return _run_standard_models_sequential(conditions)
 
-    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs)
+    worker_count, comsol_cores_per_task, comsol_memory_limit_bytes = _pool_configuration(total_jobs)
 
     print(
         f"Running {total_jobs} simulations using {worker_count} worker processes"
-        + (f" with {comsol_cores_per_task} CPU cores per COMSOL task" if model_type == "COMSOL_thermal" else "")
+        + (
+            f" with {comsol_cores_per_task} CPU cores per COMSOL task"
+            f" and {_format_ram_gb(comsol_memory_limit_bytes)} total RAM budget"
+            if model_type == "COMSOL_thermal" else ""
+        )
     )
     if total_jobs > worker_count:
         print(f"Scheduling {total_jobs - worker_count} simulations in the queue")
@@ -599,7 +674,7 @@ def run_standard_models_parallel(conditions):
         with ProcessPoolExecutor(
             max_workers=worker_count,
             initializer=_initialize_worker,
-            initargs=(comsol_cores_per_task,),
+            initargs=(comsol_cores_per_task, comsol_memory_limit_bytes),
         ) as executor:
             # Keep track of which future belongs to which index
             futures = {
@@ -668,14 +743,15 @@ def run_reduced_species_error_parallel(
             completed_error_list.sort_items()
             return completed_error_list
 
-        worker_count, comsol_cores_per_task = _pool_configuration(
+        worker_count, comsol_cores_per_task, comsol_memory_limit_bytes = _pool_configuration(
             pending_jobs,
             default_cap=COMSOL_REDUCTION_WORKER_CAP,
         )
 
         print(f"Running {pending_jobs} reduced-species simulations "
               f"using {worker_count} worker processes"
-              f" with {comsol_cores_per_task} CPU cores per COMSOL task")
+              f" with {comsol_cores_per_task} CPU cores per COMSOL task"
+              f" and {_format_ram_gb(comsol_memory_limit_bytes)} total RAM budget")
         if pending_jobs > worker_count:
             print(f"Scheduling {pending_jobs - worker_count} reduced-species simulations in the queue")
         if completed_error_list.items:
@@ -690,6 +766,7 @@ def run_reduced_species_error_parallel(
                 standard_data[1],
                 comparator_mode,
                 comsol_cores_per_task,
+                comsol_memory_limit_bytes,
                 COMSOL_REDUCED_SPECIES_TIMEOUT_SECONDS,
             )
             for species in pending_species
@@ -735,11 +812,15 @@ def run_reduced_species_error_parallel(
         return errorList
 
     total_jobs = len(conditions) * len(omitted_species_list)
-    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs)
+    worker_count, comsol_cores_per_task, comsol_memory_limit_bytes = _pool_configuration(total_jobs)
 
     print(f"Running {total_jobs} reduced-species simulations "
           f"using {worker_count} worker processes"
-          + (f" with {comsol_cores_per_task} CPU cores per COMSOL task" if model_type == "COMSOL_thermal" else ""))
+          + (
+              f" with {comsol_cores_per_task} CPU cores per COMSOL task"
+              f" and {_format_ram_gb(comsol_memory_limit_bytes)} total RAM budget"
+              if model_type == "COMSOL_thermal" else ""
+          ))
     if total_jobs > worker_count:
         print(f"Scheduling {total_jobs - worker_count} reduced-species simulations in the queue")
 
@@ -781,7 +862,7 @@ def run_reduced_species_error_parallel(
     with ProcessPoolExecutor(
         max_workers=worker_count,
         initializer=_initialize_worker,
-        initargs=(comsol_cores_per_task,),
+        initargs=(comsol_cores_per_task, comsol_memory_limit_bytes),
     ) as executor:
 
         futures = [
@@ -836,11 +917,12 @@ def run_reduced_reactions_error_parallel(
         comparator_mode):
     if model_type == "COMSOL_thermal":
         total_jobs = len(omitted_reactions_list)
-        worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=COMSOL_REDUCTION_WORKER_CAP)
+        worker_count, comsol_cores_per_task, comsol_memory_limit_bytes = _pool_configuration(total_jobs, default_cap=COMSOL_REDUCTION_WORKER_CAP)
 
         print(f"Running {total_jobs} reduced-reaction simulations "
               f"using {worker_count} worker processes"
-              f" with {comsol_cores_per_task} CPU cores per COMSOL task")
+              f" with {comsol_cores_per_task} CPU cores per COMSOL task"
+              f" and {_format_ram_gb(comsol_memory_limit_bytes)} total RAM budget")
         if total_jobs > worker_count:
             print(f"Scheduling {total_jobs - worker_count} reduced-reaction simulations in the queue")
 
@@ -862,7 +944,7 @@ def run_reduced_reactions_error_parallel(
         with ProcessPoolExecutor(
             max_workers=worker_count,
             initializer=_initialize_worker,
-            initargs=(comsol_cores_per_task,),
+            initargs=(comsol_cores_per_task, comsol_memory_limit_bytes),
         ) as executor:
             futures = [
                 executor.submit(_reduced_reactions_error_worker_all_conditions, args)
@@ -891,11 +973,15 @@ def run_reduced_reactions_error_parallel(
         return errorList
 
     total_jobs = len(conditions) * len(omitted_reactions_list)
-    worker_count, comsol_cores_per_task = _pool_configuration(total_jobs, default_cap=COMSOL_REDUCTION_WORKER_CAP)
+    worker_count, comsol_cores_per_task, comsol_memory_limit_bytes = _pool_configuration(total_jobs, default_cap=COMSOL_REDUCTION_WORKER_CAP)
 
     print(f"Running {total_jobs} reduced-reaction simulations "
           f"using {worker_count} worker processes"
-          + (f" with {comsol_cores_per_task} CPU cores per COMSOL task" if model_type == "COMSOL_thermal" else ""))
+          + (
+              f" with {comsol_cores_per_task} CPU cores per COMSOL task"
+              f" and {_format_ram_gb(comsol_memory_limit_bytes)} total RAM budget"
+              if model_type == "COMSOL_thermal" else ""
+          ))
     if total_jobs > worker_count:
         print(f"Scheduling {total_jobs - worker_count} reduced-reaction simulations in the queue")
 
@@ -928,7 +1014,7 @@ def run_reduced_reactions_error_parallel(
     with ProcessPoolExecutor(
         max_workers=worker_count,
         initializer=_initialize_worker,
-        initargs=(comsol_cores_per_task,),
+        initargs=(comsol_cores_per_task, comsol_memory_limit_bytes),
     ) as executor:
 
         futures = [
@@ -1116,6 +1202,10 @@ if __name__ == "__main__":
     # The ``.skn`` file is the only persisted state we actively rely on here.
     # It tells us whether step 1 and/or step 2 have already been computed.
     project_handler.project_identifier = str(BASE_DIR / project_name)
+    project_checkpoint = Path(project_handler.project_identifier + ".skn")
+
+    if project_checkpoint.exists() and _checkpoint_should_reset_on_start():
+        project_checkpoint.unlink()
 
     status = project_handler.where_are_we() # implemented pipeline: "nothing", "initialized", "step 1", "step 2"
 

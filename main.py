@@ -12,6 +12,7 @@ dispatching worker processes, collecting comparison errors, and writing the
 """
 
 import sys
+import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import ctypes
 import multiprocessing
@@ -1130,18 +1131,22 @@ def _species_group_from_item(item: str | list[str] | tuple[str, ...]) -> list[st
     return list(item)
 
 
+# Choose the largest tested group whose worst-condition error is at or below the
+# threshold. This is max_value, the second error number serialized in .skn files;
+# a low mean cannot compensate for any condition exceeding the threshold.
 def _select_step2_omitted_species(
     grouped_species_error: condition_objects.ItemErrorList,
     tolerance: float,
 ) -> list[str]:
-    """Choose the largest removable step-2 species group within tolerance."""
+    """Choose the largest tested group within the maximum-error tolerance."""
 
     best_group: list[str] = []
     best_error = float("inf")
     best_max_error = float("inf")
 
     for item_error in grouped_species_error.items:
-        if item_error.get_value() > tolerance:
+        maximum_error = item_error.get_max_value()
+        if not math.isfinite(maximum_error) or maximum_error > tolerance:
             continue
 
         species_group = _species_group_from_item(item_error.get_item())
